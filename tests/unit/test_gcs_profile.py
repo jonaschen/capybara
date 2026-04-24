@@ -87,6 +87,31 @@ class TestLocalFallback:
             gcs_profile.read_profile("U_Y")
 
 
+class TestListUserIds:
+    def test_gcs_lists_top_level_prefixes(self):
+        client = MockGCSClient()
+        gcs_profile.write_profile("U_A", "x", client=client, bucket="b")
+        gcs_profile.write_profile("U_B", "y", client=client, bucket="b")
+        gcs_profile.write_profile("U_A", "z", filename="training_plan.md", client=client, bucket="b")
+        assert gcs_profile.list_user_ids(client=client, bucket="b") == ["U_A", "U_B"]
+
+    def test_gcs_returns_empty_when_bucket_empty(self):
+        client = MockGCSClient()
+        assert gcs_profile.list_user_ids(client=client, bucket="empty") == []
+
+    def test_local_lists_directory_names(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("GCS_PROFILES_BUCKET", raising=False)
+        monkeypatch.setattr(gcs_profile, "_LOCAL_ROOT", tmp_path)
+        gcs_profile.write_profile("U_X", "x")
+        gcs_profile.write_profile("U_Y", "y")
+        assert gcs_profile.list_user_ids() == ["U_X", "U_Y"]
+
+    def test_local_returns_empty_when_root_missing(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("GCS_PROFILES_BUCKET", raising=False)
+        monkeypatch.setattr(gcs_profile, "_LOCAL_ROOT", tmp_path / "does-not-exist")
+        assert gcs_profile.list_user_ids() == []
+
+
 class TestEnvBucketResolution:
     def test_bucket_resolves_from_env_when_not_passed(self, monkeypatch):
         client = MockGCSClient()

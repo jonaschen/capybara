@@ -66,6 +66,25 @@ def read_profile(
     return path.read_text(encoding="utf-8")
 
 
+def list_user_ids(
+    client=None,
+    bucket: str | None = None,
+) -> list[str]:
+    """Enumerate user IDs that have at least one blob stored. Sorted."""
+    resolved_bucket = _resolve_bucket(bucket)
+    if resolved_bucket:
+        c = client or _get_client()
+        seen: set[str] = set()
+        for blob in c.bucket(resolved_bucket).list_blobs():
+            parts = blob.name.split("/", 1)
+            if len(parts) == 2 and parts[0]:
+                seen.add(parts[0])
+        return sorted(seen)
+    if not _LOCAL_ROOT.exists():
+        return []
+    return sorted(p.name for p in _LOCAL_ROOT.iterdir() if p.is_dir())
+
+
 def write_profile(
     user_id: str,
     content: str,

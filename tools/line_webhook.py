@@ -42,7 +42,7 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import MessageEvent, PostbackEvent
 
-from tools import gcs_profile
+from tools import daily_push, gcs_profile
 from tools.coach_reply import coach_reply
 from tools.onboarding_reply import onboarding_reply
 from tools.webhook_dedup import WebhookDeduplicator
@@ -103,6 +103,24 @@ def _reply_line(reply_token: str, text: str) -> None:
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "capybara-coach"}
+
+
+@app.post("/trigger/daily_push")
+async def trigger_daily_push(request: Request):
+    auth = request.headers.get("Authorization", "")
+    expected = f"Bearer {DAILY_PUSH_SECRET}" if DAILY_PUSH_SECRET else None
+    if not expected or auth != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    body = await request.json()
+    push_type = body.get("push_type", "")
+    if push_type not in ("morning", "evening"):
+        raise HTTPException(status_code=400, detail="push_type must be 'morning' or 'evening'")
+
+    with ApiClient(line_configuration) as api_client:
+        line_api = MessagingApi(api_client)
+        result = daily_push.send_daily_push(push_type=push_type, line_api=line_api)
+    return result
 
 
 @app.post("/callback")

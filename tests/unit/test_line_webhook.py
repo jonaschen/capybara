@@ -60,6 +60,49 @@ class TestHealth:
         assert r.status_code == 200
 
 
+class TestTriggerDailyPush:
+    def test_rejects_missing_bearer(self, monkeypatch):
+        monkeypatch.setattr("tools.line_webhook.DAILY_PUSH_SECRET", "s3cr3t")
+        client = TestClient(app)
+        r = client.post("/trigger/daily_push", json={"push_type": "morning"})
+        assert r.status_code == 401
+
+    def test_rejects_wrong_bearer(self, monkeypatch):
+        monkeypatch.setattr("tools.line_webhook.DAILY_PUSH_SECRET", "s3cr3t")
+        client = TestClient(app)
+        r = client.post(
+            "/trigger/daily_push",
+            json={"push_type": "morning"},
+            headers={"Authorization": "Bearer wrong"},
+        )
+        assert r.status_code == 401
+
+    def test_rejects_bad_push_type(self, monkeypatch):
+        monkeypatch.setattr("tools.line_webhook.DAILY_PUSH_SECRET", "s3cr3t")
+        client = TestClient(app)
+        r = client.post(
+            "/trigger/daily_push",
+            json={"push_type": "afternoon"},
+            headers={"Authorization": "Bearer s3cr3t"},
+        )
+        assert r.status_code == 400
+
+    def test_accepts_valid_bearer_and_forwards_to_send_daily_push(self, monkeypatch):
+        monkeypatch.setattr("tools.line_webhook.DAILY_PUSH_SECRET", "s3cr3t")
+        canned = {"pushed": 2, "failed": 0, "results": [{"user_id": "U1", "status": "ok"}]}
+        client = TestClient(app)
+        with patch("tools.line_webhook.daily_push.send_daily_push", return_value=canned) as mock_send:
+            r = client.post(
+                "/trigger/daily_push",
+                json={"push_type": "morning"},
+                headers={"Authorization": "Bearer s3cr3t"},
+            )
+        assert r.status_code == 200
+        assert r.json() == canned
+        assert mock_send.called
+        assert mock_send.call_args.kwargs.get("push_type") == "morning"
+
+
 class TestCallback:
     def test_text_message_dispatches_to_coach_reply(self):
         client = TestClient(app)
