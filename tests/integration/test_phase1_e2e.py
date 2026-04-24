@@ -96,6 +96,7 @@ def test_non_owner_injury_question_injects_disclaimer():
     captured: list[tuple[str, str]] = []
 
     with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+         patch("tools.line_webhook.gcs_profile.profile_exists", return_value=True), \
          patch("tools.gemini_client.get_llm_client", return_value=mock_llm), \
          patch("tools.line_webhook._reply_line", side_effect=lambda t, x: captured.append((t, x))):
         r = client.post(

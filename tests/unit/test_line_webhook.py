@@ -18,15 +18,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from tools.line_webhook import _event_dedup, app  # noqa: E402
+from tools.line_webhook import (  # noqa: E402
+    _conversation_history,
+    _event_dedup,
+    _user_states,
+    app,
+)
 
 
 @pytest.fixture(autouse=True)
-def reset_dedup():
-    """Each test starts with a clean dedup cache."""
+def reset_state():
+    """Each test starts with clean dedup cache, user states, and history."""
     _event_dedup._seen = {}  # type: ignore[attr-defined]
+    _user_states.clear()
+    _conversation_history.clear()
     yield
     _event_dedup._seen = {}  # type: ignore[attr-defined]
+    _user_states.clear()
+    _conversation_history.clear()
 
 
 def _fake_message_event(text: str, user_id: str, webhook_event_id: str = "evt_1") -> MagicMock:
@@ -57,6 +66,7 @@ class TestCallback:
         ev = _fake_message_event("增肌怎麼開始", user_id="U123")
 
         with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook.gcs_profile.profile_exists", return_value=True), \
              patch("tools.line_webhook.coach_reply", return_value="今天先做肌力基礎。") as mock_reply, \
              patch("tools.line_webhook._reply_line") as mock_send:
             r = client.post(
@@ -102,6 +112,7 @@ class TestCallback:
         ev = _fake_message_event("今天練什麼", user_id="U123", webhook_event_id="evt_dup")
 
         with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook.gcs_profile.profile_exists", return_value=True), \
              patch("tools.line_webhook.coach_reply", return_value="ok") as mock_reply, \
              patch("tools.line_webhook._reply_line"):
             # First delivery
