@@ -124,3 +124,16 @@ class TestCoachReply:
         from tools.coach_reply import COACH_SYSTEM_PROMPT
         for alias in ("水豚教練", "教練", "卡皮", "卡皮教練"):
             assert alias in COACH_SYSTEM_PROMPT, f"alias {alias!r} missing from coach system prompt"
+
+    def test_system_prompt_includes_feedback_awareness(self):
+        """Coach must actively listen for fit/effect/frustration signals and
+        suggest /adjust when warranted, not just answer the surface question."""
+        from tools.coach_reply import COACH_SYSTEM_PROMPT
+        # Awareness that not everyone knows what suits them
+        assert "不是每個人" in COACH_SYSTEM_PROMPT
+        # Listening cues for adjustment triggers
+        assert "/adjust" in COACH_SYSTEM_PROMPT
+        # Acknowledging frustration before prescribing
+        assert "挫折" in COACH_SYSTEM_PROMPT
+        # Substantive (fact-based) encouragement, not toxic positivity
+        assert "事實" in COACH_SYSTEM_PROMPT

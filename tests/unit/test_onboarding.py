@@ -43,6 +43,13 @@ class TestSystemPromptFile:
         text = ob.SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
         assert "[PROFILE_COMPLETE]" in text
 
+    def test_file_handles_uncertain_users_and_frustration(self):
+        """Onboarding should give space when the user is unsure and acknowledge
+        prior training frustration before moving on."""
+        text = ob.SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+        assert "不確定" in text
+        assert "挫折" in text
+
 _COMPLETE_JSON = json.dumps(
     {
         "goal": "增肌",
