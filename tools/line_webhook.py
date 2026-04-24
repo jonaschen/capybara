@@ -42,7 +42,7 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import MessageEvent, PostbackEvent
 
-from tools import daily_push, gcs_profile
+from tools import daily_push, gcs_profile, plan_adjuster
 from tools.coach_reply import coach_reply
 from tools.onboarding_reply import onboarding_reply
 from tools.webhook_dedup import WebhookDeduplicator
@@ -152,6 +152,53 @@ async def callback(request: Request):
     return {"status": "ok"}
 
 
+_OWNER_HELP_TEXT = (
+    "Owner commands:\n"
+    "/help — 顯示這個清單\n"
+    "/status — 目前狀態與使用者 id\n"
+    "/plan — 顯示目前訓練計畫\n"
+    "/adjust <理由> — 根據理由調整計畫（例如 /adjust 膝蓋不適）"
+)
+
+
+def _handle_owner_command(user_text: str, user_id: str) -> str | None:
+    """Dispatch owner slash commands. Returns the reply text, or None if
+    this isn't a recognized owner command (webhook should fall through to
+    normal routing)."""
+    stripped = user_text.strip()
+    if not stripped.startswith("/"):
+        return None
+
+    head, _, tail = stripped.partition(" ")
+    cmd = head.lower()
+    arg = tail.strip()
+
+    if cmd == "/help":
+        return _OWNER_HELP_TEXT
+
+    if cmd == "/status":
+        state = _user_states.get(user_id, STATE_IDLE)
+        return f"owner mode ON\nstate: {state}\nuser_id: {user_id}"
+
+    if cmd == "/plan":
+        try:
+            plan_md = gcs_profile.read_profile(user_id, filename="training_plan.md")
+        except FileNotFoundError:
+            return "找不到目前計畫。先完成 onboarding 或請執行 /adjust 啟動第一份。"
+        return plan_md
+
+    if cmd == "/adjust":
+        if not arg:
+            return "請提供調整理由，例如：/adjust 膝蓋不適"
+        try:
+            updated = plan_adjuster.adjust_plan(user_id=user_id, reason=arg)
+        except FileNotFoundError:
+            return "找不到目前計畫可調整。先完成 onboarding。"
+        return f"已調整。\n\n{updated}"
+
+    return None
+
+
 def _resolve_state(user_id: str) -> str:
     """Current-state lookup with lazy first-time detection.
 
@@ -175,6 +222,15 @@ def _handle_message_event(event, user_id: str, owner_mode: bool) -> None:
 
     user_text = getattr(message, "text", "") or ""
     reply_token = getattr(event, "reply_token", "") or ""
+
+    # Owner slash commands intercept before state routing. Unknown commands
+    # fall through so the developer can still chat normally.
+    if owner_mode:
+        cmd_reply = _handle_owner_command(user_text, user_id)
+        if cmd_reply is not None:
+            if reply_token:
+                _reply_line(reply_token, cmd_reply)
+            return
 
     # Owner (developer) always skips onboarding — no interview needed.
     state = STATE_IDLE if owner_mode else _resolve_state(user_id)
