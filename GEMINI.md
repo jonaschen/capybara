@@ -75,6 +75,10 @@
 3. **自動修復限制:** 測試失敗最多嘗試修復 3 次。若失敗則寫入 `reports/blocked.md` 並停止，等待人類介入。
 4. **回報機制:** 將需要人類決策的問題記錄於 `reports/human_checklist.md`。
 
+### Gemini 專屬工具與目錄 (.gemini/)
+* `.gemini/` 目錄專門存放由 Gemini 建立的輔助工具、腳本或專屬設定。
+* 若在稽核、監控或開發過程中需要自訂工具（例如自訂爬蟲或檢測腳本），應將其放置於此目錄下，與專案核心邏輯（`tools/`）隔離。
+
 ### 環境變數 (Environment Variables)
 * `LLM_PROVIDER`: `claude` (預設) 或 `gemini`。
 * `GEMINI_API_KEY` & `GEMINI_MODEL_ID`: `gemini-2.0-flash`。
