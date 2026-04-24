@@ -157,7 +157,8 @@ _OWNER_HELP_TEXT = (
     "/help — 顯示這個清單\n"
     "/status — 目前狀態與使用者 id\n"
     "/plan — 顯示目前訓練計畫\n"
-    "/adjust <理由> — 根據理由調整計畫（例如 /adjust 膝蓋不適）"
+    "/adjust <理由> — 根據理由調整計畫（例如 /adjust 膝蓋不適）\n"
+    "/onboard — 強制進入 onboarding 流程（重新接受訪談）"
 )
 
 
@@ -196,6 +197,11 @@ def _handle_owner_command(user_text: str, user_id: str) -> str | None:
             return "找不到目前計畫可調整。先完成 onboarding。"
         return f"已調整。\n\n{updated}"
 
+    if cmd == "/onboard":
+        _user_states[user_id] = STATE_ONBOARDING
+        _conversation_history.pop(user_id, None)
+        return "已切回 onboarding。下一則訊息開始訪談。"
+
     return None
 
 
@@ -232,8 +238,12 @@ def _handle_message_event(event, user_id: str, owner_mode: bool) -> None:
                 _reply_line(reply_token, cmd_reply)
             return
 
-    # Owner (developer) always skips onboarding — no interview needed.
-    state = STATE_IDLE if owner_mode else _resolve_state(user_id)
+    # Owner skips auto-onboarding (no GCS profile lookup), defaulting to IDLE.
+    # /onboard explicitly opts back in by setting STATE_ONBOARDING in _user_states.
+    if owner_mode:
+        state = _user_states.get(user_id, STATE_IDLE)
+    else:
+        state = _resolve_state(user_id)
 
     if state == STATE_ONBOARDING:
         history = _conversation_history.setdefault(user_id, [])

@@ -126,6 +126,35 @@ class TestAdjust:
         assert "理由" in text or "reason" in text.lower()
 
 
+class TestOnboard:
+    def test_onboard_sets_state_to_onboarding_and_clears_history(self):
+        _user_states["U_OWNER"] = "IDLE"
+        _conversation_history["U_OWNER"] = [{"role": "user", "content": "old"}]
+        out = _post(_fake_event("/onboard", "U_OWNER"))
+        _, text = out[0]
+        assert "onboarding" in text.lower() or "訪談" in text
+        assert _user_states["U_OWNER"] == "ONBOARDING"
+        assert "U_OWNER" not in _conversation_history
+
+    def test_after_onboard_next_owner_message_routes_to_onboarding(self):
+        # Step 1: /onboard puts owner into ONBOARDING state
+        _post(_fake_event("/onboard", "U_OWNER", event_id="evt_1"))
+        assert _user_states["U_OWNER"] == "ONBOARDING"
+
+        # Step 2: next owner message must hit onboarding_reply, not coach_reply
+        with patch("tools.line_webhook.onboarding_reply",
+                   return_value=("歡迎，先講你的目標", False)) as mock_onb, \
+             patch("tools.line_webhook.coach_reply") as mock_coach, \
+             patch("tools.line_webhook.parser.parse",
+                   return_value=[_fake_event("你好", "U_OWNER", event_id="evt_2")]), \
+             patch("tools.line_webhook._reply_line"):
+            client = TestClient(app)
+            client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+
+        assert mock_onb.called
+        assert not mock_coach.called
+
+
 class TestNonOwnerFallthrough:
     def test_non_owner_slash_message_goes_to_coach_reply(self):
         """Non-owner typing /help should be treated as a regular message, not privileged."""
