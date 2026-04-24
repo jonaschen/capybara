@@ -118,3 +118,9 @@ class TestCoachReply:
         coach_reply("隨便問", client=client)
         system = client.messages.calls[0].get("system", "")
         assert system  # non-empty system prompt present
+
+    def test_system_prompt_lists_all_four_aliases(self):
+        """Coach must recognize 水豚教練 / 教練 / 卡皮 / 卡皮教練 as itself."""
+        from tools.coach_reply import COACH_SYSTEM_PROMPT
+        for alias in ("水豚教練", "教練", "卡皮", "卡皮教練"):
+            assert alias in COACH_SYSTEM_PROMPT, f"alias {alias!r} missing from coach system prompt"

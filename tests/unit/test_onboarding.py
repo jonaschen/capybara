@@ -23,6 +23,26 @@ from tools import onboarding_reply as ob  # noqa: E402
 
 _MINIMAL_SYSTEM_PROMPT = "你是水豚教練，開始訪談新學員。完成時加上 [PROFILE_COMPLETE]。"
 
+
+class TestSystemPromptFile:
+    """Guard against accidental regressions in the production onboarding XML."""
+
+    def test_file_exists(self):
+        assert ob.SYSTEM_PROMPT_PATH.exists()
+
+    def test_file_contains_required_greeting(self):
+        text = ob.SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+        assert "初次見面，很高興認識你。我是水豚教練。你可以叫我教練，或是卡皮、卡皮教練。" in text
+
+    def test_file_lists_all_four_aliases(self):
+        text = ob.SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+        for alias in ("水豚教練", "教練", "卡皮", "卡皮教練"):
+            assert alias in text, f"alias {alias!r} missing from onboarding prompt"
+
+    def test_file_documents_completion_marker(self):
+        text = ob.SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+        assert "[PROFILE_COMPLETE]" in text
+
 _COMPLETE_JSON = json.dumps(
     {
         "goal": "增肌",
