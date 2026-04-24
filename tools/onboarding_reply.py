@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from tools import profile_generator
+from tools import plan_generator, profile_generator
 
 logger = logging.getLogger(__name__)
 
@@ -77,15 +77,14 @@ def onboarding_reply(
 
     # User-forced quit path — skip the interview LLM call, go straight to extraction.
     if user_text.strip().lower() in QUIT_KEYWORDS:
-        transcript = _transcript_from_history(history)
-        profile_generator.generate_profile(
-            transcript=transcript,
+        closing = _finalize(
+            history=history,
             user_id=user_id,
             client=client,
             gcs_client=gcs_client,
             bucket=bucket,
+            lead_in="好，我先用現在的資訊建立計畫。之後隨時可以補充。",
         )
-        closing = "好，我先用現在的資訊建立計畫。之後隨時可以補充。🐾"
         history.append({"role": "assistant", "content": closing})
         return closing, True
 
@@ -107,17 +106,42 @@ def onboarding_reply(
         del history[: len(history) - _HISTORY_CAP]
 
     if is_complete:
-        transcript = _transcript_from_history(history)
-        profile_generator.generate_profile(
-            transcript=transcript,
+        visible_reply = _finalize(
+            history=history,
             user_id=user_id,
             client=client,
             gcs_client=gcs_client,
             bucket=bucket,
-        )
-        visible_reply = (
-            f"{visible_reply}\n\n"
-            "訓練計畫會在下一次對話時交給你。🐾"
+            lead_in=visible_reply,
         )
 
     return visible_reply, is_complete
+
+
+def _finalize(
+    history: list[dict],
+    user_id: str,
+    client,
+    gcs_client,
+    bucket: str | None,
+    lead_in: str,
+) -> str:
+    """Extract profile, generate plan, return composed completion message."""
+    transcript = _transcript_from_history(history)
+    profile_data = profile_generator.generate_profile(
+        transcript=transcript,
+        user_id=user_id,
+        client=client,
+        gcs_client=gcs_client,
+        bucket=bucket,
+    )
+    plan_md = plan_generator.generate_plan(
+        profile=profile_data,
+        user_id=user_id,
+        client=client,
+        gcs_client=gcs_client,
+        bucket=bucket,
+    )
+    focus = plan_generator.extract_week_focus(plan_md)
+    tail = f"本週重點：{focus}" if focus else "訓練計畫已建立。"
+    return f"{lead_in}\n\n{tail} 🐾"

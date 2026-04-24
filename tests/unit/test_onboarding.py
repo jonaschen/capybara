@@ -134,7 +134,47 @@ class TestOnboardingReply:
             bucket="capybara-profiles",
         )
         assert is_complete is True
-        assert "U_QUIT/athlete_profile.md" in gcs.bucket("capybara-profiles").all_blobs()
+        blobs = gcs.bucket("capybara-profiles").all_blobs()
+        assert "U_QUIT/athlete_profile.md" in blobs
+        assert "U_QUIT/training_plan.md" in blobs
+
+    def test_completion_message_includes_week_focus(self):
+        """When plan body contains '本週重點', the onboarding completion message surfaces it."""
+        plan_body = (
+            "## 本週重點\n"
+            "先從深蹲硬舉起步，動作先於重量。\n"
+            "\n"
+            "## 週課表\n"
+            "| 星期 | 訓練內容 | 時長 | 強度 |\n"
+            "|---|---|---|---|\n"
+            "| 一 | 下肢 | 45 分 | 中 |\n"
+            "\n"
+            "## 調整記錄\n"
+            "（尚無調整）\n"
+        )
+
+        def responder(kwargs: dict) -> str:
+            system = kwargs.get("system") or ""
+            if "資料擷取工具" in system:
+                return _COMPLETE_JSON
+            if "產生第一份" in system:
+                return plan_body
+            return ""  # onboarding turn unused on quit path
+
+        client = MockClaudeClient(responder=responder)
+        gcs = MockGCSClient()
+        history = [{"role": "user", "content": "想增肌"}]
+        reply, is_complete = ob.onboarding_reply(
+            user_text="結束",
+            user_id="U_FOCUS",
+            history=history,
+            system_prompt=_MINIMAL_SYSTEM_PROMPT,
+            client=client,
+            gcs_client=gcs,
+            bucket="capybara-profiles",
+        )
+        assert is_complete is True
+        assert "本週重點：先從深蹲硬舉起步" in reply
 
     def test_marker_stripped_but_rest_visible(self):
         """Interview reply ends with marker — user shouldn't see it but the rest stays."""
