@@ -1,0 +1,38 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.claude/
+.vscode/
+.idea/
+*.swp
+
+# Local dev
+.env
+.env.local
+
+# Docs (not needed at runtime; keep system prompt XMLs)
+*.md
+!tools/requirements.txt
+capybara_CLAUDE.md
+capybara_GEMINI.md
+AGENTS.md
+GEMINI.md
+CLAUDE.md
+
+# Tests & fixtures
+tests/
+fixtures/
+mocks/
+reports/
+
+# Local mock GCS dir
+/tmp/mock_gcs/

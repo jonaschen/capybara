@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.local
+
+# Test / report artifacts
+.pytest_cache/
+reports/test_report_*.md
+reports/push_log_*.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
