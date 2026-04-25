@@ -30,9 +30,17 @@ class TestSystemPromptFile:
     def test_file_exists(self):
         assert ob.SYSTEM_PROMPT_PATH.exists()
 
-    def test_file_contains_required_greeting(self):
+    def test_file_does_not_repeat_welcome_greeting(self):
+        """The 『初次見面』 greeting lives in line_webhook.WELCOME_TEXT (sent on
+        FollowEvent). The onboarding prompt must NOT instruct the LLM to
+        repeat it on the first turn — observed in production that this
+        caused duplicate greetings (one from FOLLOW push, another from the
+        LLM's first reply, sometimes with literal 「」 brackets included)."""
         text = ob.SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
-        assert "初次見面，很高興認識你。卡皮教練在這。你也可以叫卡皮、教練、或水豚教練。" in text
+        # The exact greeting string must not appear as an instruction in the XML
+        assert "「初次見面，很高興認識你。卡皮教練在這。你也可以叫卡皮、教練、或水豚教練。」" not in text
+        # Positive guard: the prompt explicitly tells the LLM not to re-greet
+        assert "不要重複問候" in text
 
     def test_file_lists_all_four_aliases(self):
         text = ob.SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
