@@ -42,7 +42,7 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import FollowEvent, MessageEvent, PostbackEvent
 
-from tools import daily_push, gcs_profile, plan_adjuster, state_store
+from tools import daily_push, gcs_profile, known_users, plan_adjuster, state_store
 from tools.coach_reply import coach_reply
 from tools.onboarding_reply import onboarding_reply
 from tools.webhook_dedup import WebhookDeduplicator
@@ -115,12 +115,16 @@ def health():
     return {"status": "ok", "service": "capybara-coach"}
 
 
-@app.post("/trigger/daily_push")
-async def trigger_daily_push(request: Request):
+def _check_push_bearer(request: Request) -> None:
     auth = request.headers.get("Authorization", "")
     expected = f"Bearer {DAILY_PUSH_SECRET}" if DAILY_PUSH_SECRET else None
     if not expected or auth != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+@app.post("/trigger/daily_push")
+async def trigger_daily_push(request: Request):
+    _check_push_bearer(request)
 
     body = await request.json()
     push_type = body.get("push_type", "")
@@ -130,6 +134,19 @@ async def trigger_daily_push(request: Request):
     with ApiClient(line_configuration) as api_client:
         line_api = MessagingApi(api_client)
         result = daily_push.send_daily_push(push_type=push_type, line_api=line_api)
+    return result
+
+
+@app.post("/trigger/onboarding_invite")
+async def trigger_onboarding_invite(request: Request):
+    """Periodic re-invitation of users who follow but never onboard.
+    Cloud Scheduler: capybara-invite-stalled (Wed 11:00 Asia/Taipei).
+    Throttled by known_users module: 7-day cooldown, max 3 invites total."""
+    _check_push_bearer(request)
+
+    with ApiClient(line_configuration) as api_client:
+        line_api = MessagingApi(api_client)
+        result = known_users.send_onboarding_invites(line_api=line_api)
     return result
 
 
@@ -151,6 +168,16 @@ async def callback(request: Request):
 
         user_id = getattr(getattr(event, "source", None), "user_id", "") or ""
         owner_mode = is_owner(user_id)
+
+        # Always record the user — even if they only ever follow and never
+        # speak, we want a known_user.json so /trigger/onboarding_invite
+        # can reach them. Owner is excluded from records to keep the invite
+        # list focused on real users.
+        if user_id and not owner_mode:
+            try:
+                known_users.record_user_seen(user_id)
+            except Exception as exc:
+                logger.warning(f"record_user_seen failed for {user_id[:8]}...: {exc}")
 
         if isinstance(event, MessageEvent):
             _handle_message_event(event, user_id, owner_mode)

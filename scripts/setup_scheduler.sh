@@ -66,11 +66,41 @@ upsert_job() {
 upsert_job "capybara-push-morning" "0 7 * * *"  '{"push_type":"morning"}'
 upsert_job "capybara-push-evening" "0 21 * * *" '{"push_type":"evening"}'
 
+# Weekly re-invitation for users who followed but never onboarded.
+INVITE_ENDPOINT="${URL}/trigger/onboarding_invite"
+
+upsert_invite_job() {
+  local name="$1"
+  local cron="$2"
+  local args=(
+    --location="${REGION}"
+    --schedule="${cron}"
+    --time-zone="Asia/Taipei"
+    --uri="${INVITE_ENDPOINT}"
+    --http-method=POST
+    --headers="Authorization=Bearer ${DAILY_PUSH_SECRET},Content-Type=application/json"
+    --message-body='{}'
+    --project="${PROJECT}"
+  )
+  if gcloud scheduler jobs describe "${name}" --location="${REGION}" --project="${PROJECT}" >/dev/null 2>&1; then
+    echo "→ Updating ${name}"
+    gcloud scheduler jobs update http "${name}" "${args[@]}"
+  else
+    echo "→ Creating ${name}"
+    gcloud scheduler jobs create http "${name}" "${args[@]}"
+  fi
+}
+
+upsert_invite_job "capybara-invite-stalled" "0 11 * * 3"  # Wed 11:00
+
 echo
 echo "✓ Scheduler jobs ready."
-echo "  Endpoint: ${ENDPOINT}"
-echo "  Morning : 07:00 Asia/Taipei"
-echo "  Evening : 21:00 Asia/Taipei"
+echo "  Daily push endpoint  : ${ENDPOINT}"
+echo "  Invite endpoint      : ${INVITE_ENDPOINT}"
+echo "  Morning              : 07:00 Asia/Taipei (daily)"
+echo "  Evening              : 21:00 Asia/Taipei (daily)"
+echo "  Stalled-user invites : 11:00 Asia/Taipei (Wed only)"
 echo
 echo "Trigger manually for a smoke test:"
-echo "  gcloud scheduler jobs run capybara-push-morning --location=${REGION}"
+echo "  gcloud scheduler jobs run capybara-push-morning   --location=${REGION}"
+echo "  gcloud scheduler jobs run capybara-invite-stalled --location=${REGION}"

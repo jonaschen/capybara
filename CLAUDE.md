@@ -100,6 +100,16 @@ To add a KB file: drop a markdown into the right domain dir, add no code. To bro
 
 ---
 
+## Known Users + Invitations
+
+Every webhook touch (Message / Follow / Postback) calls `tools.known_users.record_user_seen(user_id)`, persisting `{user_id}/known_user.json` with `first_seen / last_seen / last_invited / invite_count`. Owner is excluded so the invite list stays focused on real friends.
+
+`/trigger/onboarding_invite` (Bearer DAILY_PUSH_SECRET) iterates known users, filters out anyone with `athlete_profile.md`, anyone invited within 7 days, anyone already invited 3 times, and pushes a one-line nudge to the rest. Cloud Scheduler hits it every Wednesday 11:00 Asia/Taipei via `capybara-invite-stalled`.
+
+To change the cooldown / max attempts: edit `INVITE_COOLDOWN` and `MAX_INVITES` in `tools/known_users.py`. To change the invite text: edit `INVITE_TEXT` there.
+
+---
+
 ## Log Analysis
 
 ```bash
@@ -126,6 +136,7 @@ Wraps `gcloud logging read` for `capybara-backend`. Pipe to `less` / `grep` for 
 | `tools/daily_push.py` | Morning/evening generator + per-user fan-out. Uses `get_llm_client()`. |
 | `tools/rag_retriever.py` | Slim RAG file lookup + disclaimer trigger parser. |
 | `tools/state_store.py` | GCS-backed onboarding-state persistence (Cloud Run scale-out safety). |
+| `tools/known_users.py` | Per-user `known_user.json` + 7-day-throttled re-invitation push. |
 | `tools/gcs_profile.py` | Per-user blob CRUD (`athlete_profile.md`, `training_plan.md`, …). |
 | `tools/bedrock_claude_client.py`, `tools/gemini_client.py` | LLM wrappers + `get_llm_client()`. |
 | `agents/onboarding/system_prompt.xml` | Onboarding interview prompt — **requires human sign-off to edit**. |

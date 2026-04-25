@@ -60,6 +60,78 @@ class TestHealth:
         assert r.status_code == 200
 
 
+class TestTriggerOnboardingInvite:
+    def test_rejects_missing_bearer(self, monkeypatch):
+        monkeypatch.setattr("tools.line_webhook.DAILY_PUSH_SECRET", "s3cr3t")
+        client = TestClient(app)
+        r = client.post("/trigger/onboarding_invite", json={})
+        assert r.status_code == 401
+
+    def test_accepts_valid_bearer_and_forwards_to_known_users(self, monkeypatch):
+        monkeypatch.setattr("tools.line_webhook.DAILY_PUSH_SECRET", "s3cr3t")
+        canned = {"invited": 2, "failed": 0, "details": [
+            {"user_id": "U1", "status": "invited"},
+            {"user_id": "U2", "status": "invited"},
+        ]}
+        client = TestClient(app)
+        with patch(
+            "tools.line_webhook.known_users.send_onboarding_invites",
+            return_value=canned,
+        ) as mock_send:
+            r = client.post(
+                "/trigger/onboarding_invite",
+                json={},
+                headers={"Authorization": "Bearer s3cr3t"},
+            )
+        assert r.status_code == 200
+        assert r.json() == canned
+        assert mock_send.called
+
+
+class TestRecordUserSeen:
+    def test_message_event_records_user(self):
+        client = TestClient(app)
+        ev = _fake_message_event("你好", user_id="U_RECORD_ME", webhook_event_id="evt_rec")
+
+        with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook.gcs_profile.profile_exists", return_value=True), \
+             patch("tools.line_webhook.coach_reply", return_value="hi"), \
+             patch("tools.line_webhook._reply_line"), \
+             patch("tools.line_webhook.known_users.record_user_seen") as mock_rec:
+            client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+        assert mock_rec.called
+        assert mock_rec.call_args.args[0] == "U_RECORD_ME"
+
+    def test_owner_is_not_recorded(self):
+        """Owner shouldn't appear in the invite list — they're the developer."""
+        client = TestClient(app)
+        ev = _fake_message_event("ping", user_id="U_OWNER", webhook_event_id="evt_owner")
+
+        with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook.coach_reply", return_value="pong"), \
+             patch("tools.line_webhook._reply_line"), \
+             patch("tools.line_webhook.known_users.record_user_seen") as mock_rec:
+            client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+        assert not mock_rec.called
+
+    def test_follow_event_records_user(self):
+        from linebot.v3.webhooks import FollowEvent
+
+        client = TestClient(app)
+        ev = MagicMock(spec=FollowEvent)
+        ev.webhook_event_id = "evt_f"
+        ev.reply_token = "rt_f"
+        ev.source = MagicMock()
+        ev.source.user_id = "U_FOLLOWED"
+
+        with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook._reply_line"), \
+             patch("tools.line_webhook.known_users.record_user_seen") as mock_rec:
+            client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+        assert mock_rec.called
+        assert mock_rec.call_args.args[0] == "U_FOLLOWED"
+
+
 class TestTriggerDailyPush:
     def test_rejects_missing_bearer(self, monkeypatch):
         monkeypatch.setattr("tools.line_webhook.DAILY_PUSH_SECRET", "s3cr3t")
