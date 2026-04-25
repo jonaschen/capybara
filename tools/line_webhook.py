@@ -40,7 +40,7 @@ from linebot.v3.messaging import (
     ReplyMessageRequest,
     TextMessage,
 )
-from linebot.v3.webhooks import MessageEvent, PostbackEvent
+from linebot.v3.webhooks import FollowEvent, MessageEvent, PostbackEvent
 
 from tools import daily_push, gcs_profile, plan_adjuster, state_store
 from tools.coach_reply import coach_reply
@@ -53,7 +53,17 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+# google-genai's `AFC is enabled with max remote calls: 10` line fires on every
+# LLM call and pollutes the daily log review. Lift to WARNING.
+logging.getLogger("google_genai.models").setLevel(logging.WARNING)
 logger = logging.getLogger("capybara.webhook")
+
+
+WELCOME_TEXT = (
+    "初次見面，很高興認識你。我是水豚教練。"
+    "你可以叫我教練，或是卡皮、卡皮教練。\n\n"
+    "傳一句話跟我打招呼，我們就開始。🐾"
+)
 
 
 LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET", "")
@@ -144,6 +154,8 @@ async def callback(request: Request):
 
         if isinstance(event, MessageEvent):
             _handle_message_event(event, user_id, owner_mode)
+        elif isinstance(event, FollowEvent):
+            _handle_follow_event(event, user_id)
         elif isinstance(event, PostbackEvent):
             _handle_postback_event(event, user_id, owner_mode)
         else:
@@ -278,6 +290,24 @@ def _handle_message_event(event, user_id: str, owner_mode: bool) -> None:
 
     if reply_token:
         _reply_line(reply_token, reply_text)
+
+    # One log line per turn so daily review can see what was said and what
+    # was answered. Truncated to keep logs scannable; full text lives in GCS
+    # (athlete_profile, training_plan) and the LLM call traces.
+    logger.info(
+        f"TURN user={user_id[:8]}... state={state} "
+        f"in={user_text[:80]!r} out={reply_text[:80]!r}"
+    )
+
+
+def _handle_follow_event(event, user_id: str) -> None:
+    """User added the bot as a friend. Send the standard greeting so they
+    know the bot is alive and what to do next. FollowEvent has a reply_token
+    in linebot v3 — same channel as MessageEvent."""
+    reply_token = getattr(event, "reply_token", "") or ""
+    logger.info(f"FOLLOW user={user_id[:8]}...")
+    if reply_token:
+        _reply_line(reply_token, WELCOME_TEXT)
 
 
 def _handle_postback_event(event, user_id: str, owner_mode: bool) -> None:

@@ -150,6 +150,58 @@ class TestCallback:
         assert mock_reply.called
         assert mock_reply.call_args.kwargs.get("owner") is True
 
+    def test_turn_is_logged_with_user_text_and_reply_preview(self, caplog):
+        """Per-turn log line must include user_text + reply preview so daily
+        review can read what happened without diving into LLM call traces."""
+        client = TestClient(app)
+        ev = _fake_message_event("增肌怎麼開始", user_id="U_LOG", webhook_event_id="evt_log")
+
+        with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook.gcs_profile.profile_exists", return_value=True), \
+             patch("tools.line_webhook.coach_reply", return_value="先做複合動作。"), \
+             patch("tools.line_webhook._reply_line"):
+            with caplog.at_level("INFO", logger="capybara.webhook"):
+                client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+
+        turn_lines = [r.message for r in caplog.records if r.message.startswith("TURN ")]
+        assert len(turn_lines) == 1, f"expected 1 TURN log, got {turn_lines!r}"
+        line = turn_lines[0]
+        assert "U_LOG"[:8] in line
+        assert "增肌怎麼開始" in line
+        assert "先做複合動作" in line
+
+
+class TestFollowEvent:
+    def test_follow_event_sends_welcome(self):
+        from linebot.v3.webhooks import FollowEvent
+
+        client = TestClient(app)
+        ev = MagicMock(spec=FollowEvent)
+        ev.webhook_event_id = "evt_follow"
+        ev.reply_token = "rt_follow"
+        ev.source = MagicMock()
+        ev.source.user_id = "U_NEW_FRIEND"
+
+        captured: list[tuple[str, str]] = []
+        with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch(
+                 "tools.line_webhook._reply_line",
+                 side_effect=lambda token, text: captured.append((token, text)),
+             ):
+            r = client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+
+        assert r.status_code == 200
+        assert len(captured) == 1
+        token, text = captured[0]
+        assert token == "rt_follow"
+        # Welcome must include all four self-references so the new friend
+        # knows what to call the bot.
+        assert "卡皮" in text
+        assert "教練" in text
+        assert "傳一句話" in text or "打招呼" in text
+
+
+class TestRestartRecovery:
     def test_restart_recovery_restores_onboarding_state(self):
         """Simulates a Cloud Run cold start: in-memory state is empty, but a
         state_store load returns a prior conversation. _resolve_state must
