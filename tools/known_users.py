@@ -26,8 +26,8 @@ INVITE_COOLDOWN = timedelta(days=7)
 MAX_INVITES = 3
 
 INVITE_TEXT = (
-    "之前你加我好友後就沒再聊了。"
-    "如果想試試訓練計畫，傳一句話給我。🐾"
+    "卡皮教練很久沒聽到你分享狀況了。"
+    "如果想試試訓練計畫，隨時找我聊聊喔。🐾"
 )
 
 

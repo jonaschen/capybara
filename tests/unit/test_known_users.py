@@ -185,9 +185,11 @@ class TestSendInvites:
             now=datetime(2026, 4, 25, tzinfo=timezone.utc),
         )
         text = line.sent[0]["text"]
-        # Should contain the agreed light tone — keep test loose so prompt
-        # tweaks don't break it, but the core phrase must be there.
-        assert "之前" in text and ("加我好友" in text or "沒再聊" in text)
+        # Soft/warm outreach tone: bot speaks of itself in third person at
+        # the start, soft-particle invitation at the end.
+        assert "卡皮教練" in text
+        assert "很久沒聽到" in text or "沒聽到你" in text
+        assert "隨時" in text and "聊聊" in text
         assert "🐾" in text
 
     def test_invite_records_mark(self):
