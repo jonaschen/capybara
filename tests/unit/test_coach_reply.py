@@ -125,6 +125,48 @@ class TestCoachReply:
         for alias in ("水豚教練", "教練", "卡皮", "卡皮教練"):
             assert alias in COACH_SYSTEM_PROMPT, f"alias {alias!r} missing from coach system prompt"
 
+    def test_disclaimer_fires_on_non_injury_symptom(self):
+        """胸悶 is not in the injury domain keyword list — it lives in the
+        bnd_002 disclaimer trigger list. Should still fire the disclaimer."""
+        client = MockClaudeClient.with_text("先停下訓練，找個地方坐下。")
+        reply = coach_reply("跑到一半胸悶", client=client)
+        assert MANDATORY_INJURY_DISCLAIMER in reply
+
+    def test_disclaimer_fires_on_dizziness(self):
+        client = MockClaudeClient.with_text("先停下，喝點水。")
+        reply = coach_reply("練到頭暈", client=client)
+        assert MANDATORY_INJURY_DISCLAIMER in reply
+
+    def test_disclaimer_does_not_fire_on_safe_text(self):
+        client = MockClaudeClient.with_text("Zone 2 跑步 40 分鐘。")
+        reply = coach_reply("今天該做什麼", client=client)
+        assert MANDATORY_INJURY_DISCLAIMER not in reply
+
+    def test_kb_content_injected_into_system_prompt_for_strength(self):
+        client = MockClaudeClient.with_text("ok")
+        coach_reply("漸進超負荷怎麼做", client=client)
+        system = client.messages.calls[0]["system"]
+        # Strength KB content should appear inside the injected block
+        assert "漸進超負荷原則" in system
+        assert "<knowledge_base" in system
+
+    def test_kb_content_injected_for_injury_domain_via_bnd_001(self):
+        client = MockClaudeClient.with_text("先停一週看看。")
+        coach_reply("膝蓋外側痛", client=client)
+        system = client.messages.calls[0]["system"]
+        assert "卡皮教練的受傷邊界處理指南" in system
+
+    def test_no_kb_block_for_general_fitness(self):
+        client = MockClaudeClient.with_text("ok")
+        coach_reply("你好嗎", client=client)  # general_fitness fallback
+        system = client.messages.calls[0]["system"]
+        assert "<knowledge_base" not in system
+
+    def test_owner_footer_includes_kb_token_count(self):
+        client = MockClaudeClient.with_text("Zone 2 40 分")
+        reply = coach_reply("漸進超負荷", owner=True, client=client)
+        assert "kb:" in reply
+
     def test_system_prompt_includes_feedback_awareness(self):
         """Coach must actively listen for fit/effect/frustration signals and
         suggest /adjust when warranted, not just answer the surface question."""

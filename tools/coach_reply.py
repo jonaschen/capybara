@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 import os
 
+from tools import rag_retriever
+
 logger = logging.getLogger(__name__)
 
 
@@ -107,22 +109,32 @@ def coach_reply(
         client = get_llm_client()
 
     domain = detect_domain(user_text)
+    kb_content = rag_retriever.search_fitness_knowledge(query=user_text, domain=domain)
+
+    if kb_content:
+        system_prompt = (
+            f"{COACH_SYSTEM_PROMPT}\n\n"
+            f"<knowledge_base domain=\"{domain}\">\n{kb_content}\n</knowledge_base>"
+        )
+    else:
+        system_prompt = COACH_SYSTEM_PROMPT
 
     response = client.messages.create(
         model=os.environ.get("COACH_MODEL", "claude-sonnet-4-6"),
         max_tokens=400,
-        system=COACH_SYSTEM_PROMPT,
+        system=system_prompt,
         messages=[{"role": "user", "content": user_text}],
     )
 
     text = response.content[0].text.strip()
 
-    if domain == "injury" and not owner:
+    if rag_retriever.should_inject_disclaimer(user_text) and not owner:
         text = f"{MANDATORY_INJURY_DISCLAIMER}\n\n{text}"
 
     if owner:
         in_tok = getattr(response.usage, "input_tokens", 0)
         out_tok = getattr(response.usage, "output_tokens", 0)
-        text = f"{text}\n\n[🏊 domain: {domain} | tokens: {in_tok}in/{out_tok}out]"
+        kb_tok = rag_retriever.estimate_tokens(kb_content)
+        text = f"{text}\n\n[🏊 domain: {domain} | tokens: {in_tok}in/{out_tok}out | kb: {kb_tok}]"
 
     return text

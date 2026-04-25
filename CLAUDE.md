@@ -6,29 +6,22 @@ This file is **how we work**. For **what we're building** (full architecture, pe
 
 ---
 
-## Current Phase: 0 — Infrastructure
+## Current Status: in production
 
-- [ ] LINE channel created, `CHANNEL_ACCESS_TOKEN` + `CHANNEL_SECRET` obtained
-- [ ] GCS bucket `capybara-profiles` created in `hanana-491223`
-- [ ] Cloud Run `capybara-backend` deployed (separate from `hanana-backend`)
-- [ ] Cloud Scheduler jobs: `capybara-push-morning` (07:00) + `capybara-push-evening` (21:00)
+The bot is **deployed to Cloud Run** (`capybara-backend`, `asia-east1`, project `hanana-491223`) and serving live LINE traffic. Owner is dogfooding daily; first wave of friend testers starting now. Daily workflow: review backend logs each morning, iterate prompts and behaviour from observed conversations.
 
-Phase 0 is mostly out-of-repo cloud provisioning handled by the human. First code session is Phase 1.
+| Phase | Status |
+|---|---|
+| 0 — Infrastructure | ✓ shipped (LINE channel + GCS bucket `capybara-profiles` + Cloud Run + 2 Scheduler jobs) |
+| 1 — Basic Q&A | ✓ shipped (`coach_reply` + `line_webhook` + LLM wrappers) |
+| 2 — Onboarding | ✓ shipped (state machine + `profile_generator` + `athlete_profile.md`) |
+| 3 — Training plan | ✓ shipped (`plan_generator` wired into onboarding completion) |
+| 4 — Daily push | ✓ shipped (`daily_push` + `/trigger/daily_push` + 2 cron jobs) |
+| 5 — Dynamic adjustment | ✓ shipped (`plan_adjuster` + owner `/adjust` command); auto-triggers (miss-streak, race-proximity) deferred |
+| 6 — Triathlon-specific | scoped, not started (race countdown, auto-taper at 3 weeks, brick templates) |
+| 7 — Real user trial | active (n=1 owner + first friend testers) |
 
----
-
-## Phase Roadmap
-
-| Phase | Goal | Key deliverable | Exit criterion |
-|---|---|---|---|
-| 0 | Infrastructure | LINE + GCS + Cloud Run + Scheduler | All 4 checkboxes green; webhook reachable |
-| 1 | Basic Q&A | `tools/line_webhook.py` + `tools/coach_reply.py` — domain detect → LLM → LINE reply | Owner sends "增肌怎麼開始" → coherent reply locally |
-| 2 | Onboarding | `agents/onboarding/system_prompt.xml` + `tools/profile_generator.py` → `athlete_profile.md` | 8–10 turn onboarding produces profile in mock GCS |
-| 3 | Training plan | `tools/plan_generator.py` → `training_plan.md` | First plan matches spec §Training Plan Format |
-| 4 | Daily push | `tools/daily_push.py` 07:00 / 21:00, `/trigger/daily_push` endpoint | 3 consecutive successful Scheduler runs on staging |
-| 5 | Dynamic adjustment | Plan updates on injury / missed-workouts / feedback / race-proximity | Adjustment appears in `training_plan.md` §調整記錄 |
-| 6 | Triathlon-specific | Race countdown, taper phase (auto at 3 weeks), brick workouts | Test user 3 weeks from race gets taper plan |
-| 7 | Real user trial | n=2 athletes, 4-week pilot | Both complete 4 weeks; `reports/pilot_feedback.md` populated |
+State persistence is now real: `_user_states` and `_conversation_history` are mirrored to GCS via `tools/state_store.py` while a user is in ONBOARDING, so Cloud Run cold starts and scale-out events don't drop interview state.
 
 ---
 
@@ -94,24 +87,54 @@ Primary language: Traditional Chinese. Switch to English if user writes in Engli
 
 ---
 
-## Key Files (target paths — most do not exist yet)
+## Knowledge Base
+
+Slim RAG: direct markdown file lookup, no embeddings. Source of truth is **`PLAN_capybara_knowledge_base.md`** (12+ files, content + injection rules + token budget).
+
+- `tools/rag_retriever.py` exposes `search_fitness_knowledge(query, domain, max_tokens=800)` and `should_inject_disclaimer(text)`.
+- `coach_reply` injects KB content into the system prompt as a `<knowledge_base>` block. Disclaimer trigger words live IN `knowledge_base/boundaries/bnd_002_medical_disclaimer.md` and are parsed at module load.
+- Domains with KB dirs: `triathlon`, `strength`, `fat_loss`, `recovery`, `injury` (→ `boundaries/bnd_001`). `nutrition` and `general_fitness` rely on the LLM.
+- When triathlon's 5 files exceed the 800-token budget, retriever picks the single most-relevant file by query overlap.
+
+To add a KB file: drop a markdown into the right domain dir, add no code. To broaden the disclaimer trigger list: edit `bnd_002_medical_disclaimer.md` `## 觸發詞` section — `should_inject_disclaimer` picks it up automatically on next process start.
+
+---
+
+## Log Analysis
+
+```bash
+./scripts/fetch_logs.sh                      # last 24h, 200 lines
+./scripts/fetch_logs.sh --hours 1            # tighter window
+./scripts/fetch_logs.sh --user U1234abcd     # one user (substring grep)
+./scripts/fetch_logs.sh --domain triathlon   # one domain (greps "Domain detected: triathlon")
+```
+
+Wraps `gcloud logging read` for `capybara-backend`. Pipe to `less` / `grep` for further slicing.
+
+---
+
+## Key Files
 
 | File | Purpose |
 |---|---|
-| `tools/line_webhook.py` | FastAPI webhook, state routing IDLE / ONBOARDING / COACHING |
-| `tools/coach_reply.py` | Domain detect → RAG inject → LLM → LINE push |
-| `tools/profile_generator.py` | Onboarding conversation → `athlete_profile.md` (write-once) |
-| `tools/plan_generator.py` | Generates and dynamically adjusts `training_plan.md` |
-| `tools/daily_push.py` | Morning + evening scheduled push. Uses `get_llm_client()`. |
-| `tools/bedrock_claude_client.py` | Anthropic Claude wrapper |
-| `tools/gemini_client.py` | Gemini wrapper |
-| `agents/onboarding/system_prompt.xml` | Onboarding interview prompt — **requires human sign-off to edit** |
-| `knowledge_base/{triathlon,strength,fat_loss,recovery}/*.md` | Slim RAG chunks — direct file lookup, no vector search |
-| `fixtures/athlete_profile_dev.md` | Test fixture — **requires human sign-off to edit** |
-| `mocks/` | All external-API mocks (see table above) |
-| `reports/` | Test reports, push logs, human checklist, blocked issues |
-| `.env.example` | All required env vars (not yet created) |
-| `Dockerfile` | Slim image, <300 MB target, cold start <5s |
+| `tools/line_webhook.py` | FastAPI app: `/health`, `/callback`, `/trigger/daily_push`. State machine + owner slash commands. |
+| `tools/coach_reply.py` | Domain detect → KB inject → LLM → disclaimer if triggered. |
+| `tools/onboarding_reply.py` | ONBOARDING-state handler; finalisation via `_finalize` runs profile + plan generation. |
+| `tools/profile_generator.py` | Transcript → `athlete_profile.md` (write-once). |
+| `tools/plan_generator.py` | First training plan from profile. |
+| `tools/plan_adjuster.py` | In-place plan revision (owner `/adjust`). |
+| `tools/daily_push.py` | Morning/evening generator + per-user fan-out. Uses `get_llm_client()`. |
+| `tools/rag_retriever.py` | Slim RAG file lookup + disclaimer trigger parser. |
+| `tools/state_store.py` | GCS-backed onboarding-state persistence (Cloud Run scale-out safety). |
+| `tools/gcs_profile.py` | Per-user blob CRUD (`athlete_profile.md`, `training_plan.md`, …). |
+| `tools/bedrock_claude_client.py`, `tools/gemini_client.py` | LLM wrappers + `get_llm_client()`. |
+| `agents/onboarding/system_prompt.xml` | Onboarding interview prompt — **requires human sign-off to edit**. |
+| `knowledge_base/{triathlon,strength,fat_loss,recovery,boundaries}/*.md` | Slim RAG chunks. |
+| `mocks/` | gcs_mock, line_mock, claude_mock — used by every test. |
+| `scripts/deploy.sh`, `scripts/setup_scheduler.sh`, `scripts/fetch_logs.sh` | Ops tooling. |
+| `DEPLOY.md` | One-page deploy walkthrough. |
+| `tests/conftest.py` | Forces local-fallback for GCS in tests; sets safe env defaults. |
+| `Dockerfile` | python:3.11-slim, no venv inside container. |
 
 ---
 
@@ -134,11 +157,21 @@ LLM routing: `daily_push.py` uses `get_llm_client()` for provider switching; `co
 # Install deps
 .venv/bin/pip install -r tools/requirements.txt
 
-# Local webhook (after Phase 1 lands)
+# Local webhook
 .venv/bin/uvicorn tools.line_webhook:app --port 8080 --reload
+
+# Deploy / re-deploy to Cloud Run
+./scripts/deploy.sh                # full build + deploy
+./scripts/deploy.sh --no-build     # env-only redeploy
+
+# (Re)create the two daily-push Cloud Scheduler jobs
+./scripts/setup_scheduler.sh
+
+# Pull recent backend logs
+./scripts/fetch_logs.sh --hours 6
 ```
 
-Full deployment commands (gcloud run deploy, gcloud scheduler jobs create) are in `capybara_CLAUDE.md` §Deployment — do not paraphrase them here, copy exactly when shipping.
+Full deployment walkthrough is in `DEPLOY.md`. Underlying gcloud commands are in `capybara_CLAUDE.md` §Deployment.
 
 ---
 
@@ -155,4 +188,4 @@ Full deployment commands (gcloud run deploy, gcloud scheduler jobs create) are i
 
 ## Owner Mode
 
-Recognised by `OWNER_LINE_USER_ID`. Direct tone, no disclaimer injection, debug footer `[🏊 domain: X | tokens: Xin/Xout]`. Commands: `/status`, `/help`, `/onboard` (restart), `/plan` (show current), `/adjust` (trigger adjustment).
+Recognised by `OWNER_LINE_USER_ID`. Direct tone, no disclaimer injection, debug footer `[🏊 domain: X | tokens: Xin/Xout | kb: N]` (kb = estimated KB tokens injected into the system prompt). Commands: `/status`, `/help`, `/onboard` (restart onboarding for the owner), `/plan` (show current plan), `/adjust <理由>` (trigger plan adjustment).

@@ -42,7 +42,7 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import MessageEvent, PostbackEvent
 
-from tools import daily_push, gcs_profile, plan_adjuster
+from tools import daily_push, gcs_profile, plan_adjuster, state_store
 from tools.coach_reply import coach_reply
 from tools.onboarding_reply import onboarding_reply
 from tools.webhook_dedup import WebhookDeduplicator
@@ -208,11 +208,25 @@ def _handle_owner_command(user_text: str, user_id: str) -> str | None:
 def _resolve_state(user_id: str) -> str:
     """Current-state lookup with lazy first-time detection.
 
-    If we've never seen this user in memory, check GCS: no profile means
-    they're new, so enter ONBOARDING. Profile present means back in IDLE.
+    Resolution order (Cloud Run statelessness — instance restarts must not
+    drop a user mid-onboarding):
+      1. In-memory _user_states — fastest path for active conversations.
+      2. state_store (GCS) — if there's a saved onboarding-in-progress
+         state, restore history into _conversation_history and resume
+         ONBOARDING. This makes the bot survive cold starts and scale-out.
+      3. gcs_profile.profile_exists — first-time fallback. No profile →
+         new user → ONBOARDING. Profile present → IDLE.
     """
     if user_id in _user_states:
         return _user_states[user_id]
+
+    saved = state_store.load_onboarding_state(user_id)
+    if saved is not None:
+        _conversation_history[user_id] = list(saved.get("history", []))
+        _user_states[user_id] = STATE_ONBOARDING
+        logger.info(f"Restored onboarding state for {user_id[:8]}... ({len(_conversation_history[user_id])} msgs)")
+        return STATE_ONBOARDING
+
     if gcs_profile.profile_exists(user_id):
         _user_states[user_id] = STATE_IDLE
     else:
@@ -255,6 +269,10 @@ def _handle_message_event(event, user_id: str, owner_mode: bool) -> None:
         if is_complete:
             _user_states[user_id] = STATE_IDLE
             _conversation_history.pop(user_id, None)
+            state_store.clear_onboarding_state(user_id)
+        else:
+            # Persist after every turn so a Cloud Run restart can resume.
+            state_store.save_onboarding_state(user_id, history)
     else:
         reply_text = coach_reply(user_text, user_id=user_id, owner=owner_mode)
 
