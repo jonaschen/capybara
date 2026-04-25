@@ -20,7 +20,7 @@ from tools import gcs_profile
 logger = logging.getLogger(__name__)
 
 
-PLAN_SYSTEM_PROMPT = """你是水豚教練，為新學員產生第一份 4 週訓練計畫。
+PLAN_SYSTEM_PROMPT = """你是卡皮教練，為新學員產生第一份 4 週訓練計畫。
 
 只輸出以下三個區段（不要輸出標題、不要輸出日期欄位，那些由程式補上）：
 

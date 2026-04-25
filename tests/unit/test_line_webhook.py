@@ -266,11 +266,15 @@ class TestFollowEvent:
         assert len(captured) == 1
         token, text = captured[0]
         assert token == "rt_follow"
-        # Welcome must include all four self-references so the new friend
-        # knows what to call the bot.
+        # Welcome lists the alias options so the new friend knows what to
+        # call the bot.
         assert "卡皮" in text
         assert "教練" in text
-        assert "傳一句話" in text or "打招呼" in text
+        # New voice: open-ended invitation, no command/imperative.
+        assert "隨時" in text
+        # Strict no-我 voice rule.
+        from tools.line_webhook import WELCOME_TEXT
+        assert "我" not in WELCOME_TEXT
 
 
 class TestRestartRecovery:

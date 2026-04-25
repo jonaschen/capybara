@@ -83,7 +83,7 @@ def onboarding_reply(
             client=client,
             gcs_client=gcs_client,
             bucket=bucket,
-            lead_in="好，我先用現在的資訊建立計畫。之後隨時可以補充。",
+            lead_in="好。卡皮先用現在的資訊把計畫排出來。之後想補充隨時跟卡皮說喔。",
         )
         history.append({"role": "assistant", "content": closing})
         return closing, True
@@ -143,5 +143,8 @@ def _finalize(
         bucket=bucket,
     )
     focus = plan_generator.extract_week_focus(plan_md)
-    tail = f"本週重點：{focus}" if focus else "訓練計畫已建立。"
+    if focus:
+        tail = f"卡皮這週先幫你準備：{focus}。練的時候有什麼感覺都跟卡皮說喔。"
+    else:
+        tail = "訓練計畫先建好囉。練的時候有什麼感覺都跟卡皮說喔。"
     return f"{lead_in}\n\n{tail} 🐾"

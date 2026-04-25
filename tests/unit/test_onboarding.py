@@ -32,19 +32,24 @@ class TestSystemPromptFile:
 
     def test_file_contains_required_greeting(self):
         text = ob.SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
-        assert "初次見面，很高興認識你。我是卡皮教練。你也可以叫我教練、卡皮、或水豚教練。" in text
+        assert "初次見面，很高興認識你。卡皮教練在這。你也可以叫卡皮、教練、或水豚教練。" in text
 
     def test_file_lists_all_four_aliases(self):
         text = ob.SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
         for alias in ("水豚教練", "教練", "卡皮", "卡皮教練"):
             assert alias in text, f"alias {alias!r} missing from onboarding prompt"
 
-    def test_file_instructs_self_reference_as_kapi(self):
-        """Bot must self-introduce as 卡皮教練, not 水豚教練."""
+    def test_file_embeds_voice_rules(self):
+        """Onboarding prompt must carry the central voice spec, including
+        the strict no-『我』 self-reference rule."""
         text = ob.SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
-        assert "我是卡皮教練" in text
-        assert "自稱時用「卡皮教練」" in text
-        # The opening must NOT lead with 水豚教練
+        assert "絕對不用「我」" in text
+        assert "永遠用「卡皮教練」或「卡皮」稱呼自己" in text
+        # Greeting itself must NOT use 「我是」.  The voice block has 「我」
+        # inside ❌ counter-examples — that's intentional, so we just guard
+        # against the specific "我是" patterns that would re-introduce
+        # first-person self-introduction.
+        assert "我是卡皮教練" not in text
         assert "我是水豚教練" not in text
 
     def test_file_documents_completion_marker(self):
@@ -209,7 +214,12 @@ class TestOnboardingReply:
             bucket="capybara-profiles",
         )
         assert is_complete is True
-        assert "本週重點：先從深蹲硬舉起步" in reply
+        # Focus surfaces (regardless of label phrasing — voice rules may
+        # rephrase the lead-in around it).
+        assert "先從深蹲硬舉起步" in reply
+        # Voice: third-person and inviting.
+        assert "卡皮" in reply
+        assert "我" not in reply.replace("「我」", "")  # tolerate quoted ❌ examples if any
 
     def test_marker_stripped_but_rest_visible(self):
         """Interview reply ends with marker — user shouldn't see it but the rest stays."""

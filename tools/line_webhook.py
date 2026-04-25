@@ -60,9 +60,9 @@ logger = logging.getLogger("capybara.webhook")
 
 
 WELCOME_TEXT = (
-    "初次見面，很高興認識你。我是卡皮教練。"
-    "你也可以叫我教練、卡皮、或水豚教練。\n\n"
-    "傳一句話跟我打招呼，我們就開始。🐾"
+    "初次見面，很高興認識你。卡皮教練在這。"
+    "你也可以叫卡皮、教練、或水豚教練。\n\n"
+    "想聊什麼隨時說，卡皮在這聽喔。🐾"
 )
 
 
@@ -224,7 +224,7 @@ def _handle_owner_command(user_text: str, user_id: str) -> str | None:
         try:
             plan_md = gcs_profile.read_profile(user_id, filename="training_plan.md")
         except FileNotFoundError:
-            return "找不到目前計畫。先完成 onboarding 或請執行 /adjust 啟動第一份。"
+            return "找不到目前計畫。先完成 onboarding 或執行 /adjust 啟動第一份。"
         return plan_md
 
     if cmd == "/adjust":

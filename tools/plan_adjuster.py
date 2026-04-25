@@ -19,7 +19,7 @@ from tools import gcs_profile
 logger = logging.getLogger(__name__)
 
 
-ADJUST_SYSTEM_PROMPT = """你是水豚教練，調整一份現有的訓練計畫。
+ADJUST_SYSTEM_PROMPT = """你是卡皮教練，調整一份現有的訓練計畫。
 
 學員提出了一個調整理由。請根據理由改寫計畫的三個區段（只輸出這三段，不要輸出標題或日期）：
 
