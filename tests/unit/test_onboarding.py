@@ -32,12 +32,20 @@ class TestSystemPromptFile:
 
     def test_file_contains_required_greeting(self):
         text = ob.SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
-        assert "初次見面，很高興認識你。我是水豚教練。你可以叫我教練，或是卡皮、卡皮教練。" in text
+        assert "初次見面，很高興認識你。我是卡皮教練。你也可以叫我教練、卡皮、或水豚教練。" in text
 
     def test_file_lists_all_four_aliases(self):
         text = ob.SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
         for alias in ("水豚教練", "教練", "卡皮", "卡皮教練"):
             assert alias in text, f"alias {alias!r} missing from onboarding prompt"
+
+    def test_file_instructs_self_reference_as_kapi(self):
+        """Bot must self-introduce as 卡皮教練, not 水豚教練."""
+        text = ob.SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+        assert "我是卡皮教練" in text
+        assert "自稱時用「卡皮教練」" in text
+        # The opening must NOT lead with 水豚教練
+        assert "我是水豚教練" not in text
 
     def test_file_documents_completion_marker(self):
         text = ob.SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")

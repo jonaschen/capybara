@@ -69,7 +69,7 @@ def render_profile_md(data: dict[str, Any]) -> str:
     """Deterministic renderer. Never calls an LLM."""
     today = date.today().isoformat()
     lines = [
-        "# 水豚教練學員輪廓",
+        "# 卡皮教練學員輪廓",
         f"Generated: {today}",
         "",
         "## 核心資料",

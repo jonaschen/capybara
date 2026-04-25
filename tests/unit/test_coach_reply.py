@@ -125,6 +125,17 @@ class TestCoachReply:
         for alias in ("水豚教練", "教練", "卡皮", "卡皮教練"):
             assert alias in COACH_SYSTEM_PROMPT, f"alias {alias!r} missing from coach system prompt"
 
+    def test_system_prompt_instructs_self_reference_as_kapi(self):
+        """Coach must SAY 卡皮教練 when speaking about itself."""
+        from tools.coach_reply import COACH_SYSTEM_PROMPT
+        # Identity sentence leads with 卡皮教練, not 水豚教練
+        assert COACH_SYSTEM_PROMPT.startswith("你是卡皮教練")
+        assert "自稱時用「卡皮教練」" in COACH_SYSTEM_PROMPT
+
+    def test_disclaimer_uses_kapi_self_reference(self):
+        from tools.coach_reply import MANDATORY_INJURY_DISCLAIMER
+        assert MANDATORY_INJURY_DISCLAIMER.startswith("卡皮教練提供的是運動訓練參考建議")
+
     def test_disclaimer_fires_on_non_injury_symptom(self):
         """胸悶 is not in the injury domain keyword list — it lives in the
         bnd_002 disclaimer trigger list. Should still fire the disclaimer."""
