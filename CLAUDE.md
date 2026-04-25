@@ -23,6 +23,10 @@ The bot is **deployed to Cloud Run** (`capybara-backend`, `asia-east1`, project 
 
 State persistence is now real: `_user_states` and `_conversation_history` are mirrored to GCS via `tools/state_store.py` while a user is in ONBOARDING, so Cloud Run cold starts and scale-out events don't drop interview state.
 
+**Voice spec is non-negotiable.** `tools/voice.py` defines `CAPYBARA_VOICE` — six rules including the strict 「自稱不用我」 (bot uses 卡皮教練/卡皮 in third person, never 我). Every system prompt embeds it; hardcoded user-facing strings are guarded by `tests/unit/test_voice.py`. If you're tempted to write 「我…」 in any user-facing string, stop and check.
+
+**Evening log review is the iteration loop.** User runs `./scripts/fetch_logs.sh` after the day's traffic, walks through it with Claude, and asks for targeted fixes. Match cadence: small focused diffs per issue, ship quickly, no big refactors mid-review.
+
 ---
 
 ## Development Workflow
@@ -137,6 +141,7 @@ Wraps `gcloud logging read` for `capybara-backend`. Pipe to `less` / `grep` for 
 | `tools/rag_retriever.py` | Slim RAG file lookup + disclaimer trigger parser. |
 | `tools/state_store.py` | GCS-backed onboarding-state persistence (Cloud Run scale-out safety). |
 | `tools/known_users.py` | Per-user `known_user.json` + 7-day-throttled re-invitation push. |
+| `tools/voice.py` | `CAPYBARA_VOICE` — single source of truth for the bot's six voice rules. Imported by every LLM system prompt; mirrored in `agents/onboarding/system_prompt.xml`. |
 | `tools/gcs_profile.py` | Per-user blob CRUD (`athlete_profile.md`, `training_plan.md`, …). |
 | `tools/bedrock_claude_client.py`, `tools/gemini_client.py` | LLM wrappers + `get_llm_client()`. |
 | `agents/onboarding/system_prompt.xml` | Onboarding interview prompt — **requires human sign-off to edit**. |
@@ -200,3 +205,16 @@ Full deployment walkthrough is in `DEPLOY.md`. Underlying gcloud commands are in
 ## Owner Mode
 
 Recognised by `OWNER_LINE_USER_ID`. Direct tone, no disclaimer injection, debug footer `[🏊 domain: X | tokens: Xin/Xout | kb: N]` (kb = estimated KB tokens injected into the system prompt). Commands: `/status`, `/help`, `/onboard` (restart onboarding for the owner), `/plan` (show current plan), `/adjust <理由>` (trigger plan adjustment).
+
+Owner is also excluded from `known_users.json` so the weekly invite cron job (`capybara-invite-stalled`) doesn't pester the developer.
+
+---
+
+## Endpoints
+
+| Path | Auth | Purpose |
+|---|---|---|
+| `GET /health` | none | Cloud Run liveness probe |
+| `POST /callback` | LINE signature | LINE Messaging API webhook |
+| `POST /trigger/daily_push` | Bearer `DAILY_PUSH_SECRET` | Body `{"push_type":"morning"\|"evening"}` — Cloud Scheduler `capybara-push-morning` (07:00) / `capybara-push-evening` (21:00) |
+| `POST /trigger/onboarding_invite` | Bearer `DAILY_PUSH_SECRET` | Body `{}` — Cloud Scheduler `capybara-invite-stalled` (Wed 11:00) — invites stalled users with cooldown |
