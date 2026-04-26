@@ -6,6 +6,12 @@ This file is **how we work**. For **what we're building** (full architecture, pe
 
 ---
 
+## ⚠️ Migration Notice
+
+**This repo is being migrated to `/home/jonas/claude-home/advisors/capy/` as part of the `advisors/` monorepo.** The `shared/` foundation (Track 1) shipped 2026-04-26 (commit `8479d35` in advisors repo, 82 tests). **Track 2 = port Capy onto `shared/` is the next dedicated session.** Until cutover, **production code lives here in `capybara/`** — keep all production fixes landing here. After cutover, this repo gets archived. **See `/home/jonas/claude-home/advisors/ROADMAP.md` for full plan + Track 3 punch-list (progress_log, friend `/adjust`, Phase B-full memory, natural-learning write-back, Phase 6 triathlon) + Track 4 (Kim).**
+
+---
+
 ## Current Status: in production
 
 The bot is **deployed to Cloud Run** (`capybara-backend`, `asia-east1`, project `hanana-491223`) and serving live LINE traffic. Owner is dogfooding daily; first wave of friend testers starting now. Daily workflow: review backend logs each morning, iterate prompts and behaviour from observed conversations.
