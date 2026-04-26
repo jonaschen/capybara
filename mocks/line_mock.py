@@ -31,6 +31,9 @@ class MockLINEAPI:
         self._fail_users = fail_users or set()
         self._followers: list[str] = []
         self._followers_page_size: int = 1000
+        # Image content keyed by message_id, used by get_message_content().
+        # Tests seed via .seed_image(message_id, bytes, mime).
+        self._image_contents: dict[str, tuple[bytes, str]] = {}
 
     def push_message(self, request: Any) -> None:
         to = getattr(request, "to", None) or request["to"]
@@ -59,3 +62,21 @@ class MockLINEAPI:
         chunk = self._followers[idx:end]
         next_token = str(end) if end < len(self._followers) else None
         return _FollowersResponse(user_ids=chunk, next_token=next_token)
+
+    # ─── Image content (MessagingApiBlob shape) ──────────────────────────
+
+    def seed_image(self, message_id: str, data: bytes, mime: str = "image/jpeg") -> None:
+        """Test helper: register image bytes that get_message_content will return."""
+        self._image_contents[message_id] = (data, mime)
+
+    def get_message_content(self, message_id: str) -> bytes:
+        """Mimic linebot.v3.messaging.MessagingApiBlob.get_message_content."""
+        if message_id not in self._image_contents:
+            raise RuntimeError(f"mock: no seeded content for message_id={message_id!r}")
+        return self._image_contents[message_id][0]
+
+    def get_message_content_mime(self, message_id: str) -> str:
+        """Companion accessor; real SDK returns this via Content-Type header."""
+        if message_id not in self._image_contents:
+            return "image/jpeg"
+        return self._image_contents[message_id][1]

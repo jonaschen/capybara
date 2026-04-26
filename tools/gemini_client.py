@@ -42,6 +42,41 @@ class _Message:
 _DEFAULT_MODEL = os.environ.get("GEMINI_MODEL_ID", "gemini-2.0-flash")
 
 
+def _content_to_parts(content) -> list[dict]:
+    """Convert message content (string OR Anthropic-style block list) to
+    Gemini parts. String stays single text-part (back-compat). Block list
+    maps text → {"text": ...} and image → {"inline_data": {mime_type, data}}.
+
+    Image source forms accepted:
+      - {"type": "base64", "media_type": "image/png", "data": "<b64 str>"}  (Anthropic format)
+      - {"type": "bytes",  "media_type": "image/jpeg", "data": <bytes>}     (skip round-trip)
+    Bytes are what google-genai's inline_data wants; base64 strings are decoded.
+    """
+    if isinstance(content, str):
+        return [{"text": content}]
+    if not isinstance(content, list):
+        return [{"text": str(content)}]
+
+    parts: list[dict] = []
+    for block in content:
+        btype = block.get("type")
+        if btype == "text":
+            parts.append({"text": block.get("text", "")})
+        elif btype == "image":
+            source = block.get("source", {})
+            data = source.get("data", b"")
+            if isinstance(data, str):
+                import base64
+                data = base64.b64decode(data)
+            parts.append({"inline_data": {
+                "mime_type": source.get("media_type", "image/jpeg"),
+                "data": data,
+            }})
+        else:
+            parts.append({"text": str(block)})
+    return parts
+
+
 def _create_genai_client(api_key: str):
     """Create a google.genai.Client. Extracted for test patching."""
     from google import genai
@@ -71,8 +106,8 @@ class _GeminiMessages:
         contents = []
         for msg in (messages or []):
             role = "user" if msg["role"] == "user" else "model"
-            text = msg["content"] if isinstance(msg["content"], str) else str(msg["content"])
-            contents.append({"role": role, "parts": [{"text": text}]})
+            parts = _content_to_parts(msg["content"])
+            contents.append({"role": role, "parts": parts})
 
         # Do NOT pass max_output_tokens — known SDK bug triggers early truncation.
         config_kwargs: dict = {}

@@ -131,6 +131,24 @@ To change the cooldown / max attempts: edit `INVITE_COOLDOWN` and `MAX_INVITES` 
 
 ---
 
+## Image Reader
+
+朋友把跑步 / 訓練 App 的截圖（Garmin / Strava / Nike Run / 自家 spreadsheet 都算）傳進 LINE，卡皮會給個人化解讀。流程：
+
+1. webhook 偵測 `ImageMessageContent`（`tools/line_webhook.py::_handle_image_message`）
+2. 三個 branch：
+   - **ONBOARDING 中** → reply_token 推「先聊一下基本資料，等卡皮認識你之後再幫你看數據比較準喔」，不走 LLM
+   - **IDLE 但無 `athlete_profile.md`**（罕見邊角，例如 owner 還沒 onboard）→ reply_token 推「卡皮這邊還沒有你的訓練檔案⋯」
+   - **IDLE + 有 profile** → reply_token 推 buffer「收到了，稍等卡皮看看 🐾」→ 抓圖 bytes（`MessagingApiBlob.get_message_content`，不寫硬碟）→ `tools.image_reply.analyze_training_image` 單次 multimodal LLM call → push 結果
+3. LLM 不認得是訓練數據時回 sentinel `NOT_TRAINING_DATA`，webhook push fallback「不太像訓練數據⋯」
+4. owner footer：`[🏊 image | size: Nkb | tokens: Nin/Nout]`
+
+**個人化邊界**：目前只到 `athlete_profile.md` 等級——卡皮會說「結合你想完成台東 226⋯」這種引用 profile 的話。**不會**做到「你上週說工作壓力大⋯」這種跨對話 callback——那需要另開的 per-user 對話記憶層（`user_notes.md` + 抽事實的 background pass），是 Phase B 的另一個 PLAN。
+
+`tools/gemini_client.py` 已支援 multimodal（list-form content blocks → Gemini parts with `inline_data`），未來想換成 Claude vision 只要在 `bedrock_claude_client.py` 加同樣的轉換即可。
+
+---
+
 ## Log Analysis
 
 ```bash
@@ -150,6 +168,7 @@ Wraps `gcloud logging read` for `capybara-backend`. Pipe to `less` / `grep` for 
 |---|---|
 | `tools/line_webhook.py` | FastAPI app: `/health`, `/callback`, `/trigger/daily_push`. State machine + owner slash commands. |
 | `tools/coach_reply.py` | Domain detect → KB inject → LLM → disclaimer if triggered. |
+| `tools/image_reply.py` | Personalized reply for training-screenshot images. Single multimodal LLM call (image + athlete_profile + voice). Returns `(reply_or_None, debug_info)` — None when LLM emits `NOT_TRAINING_DATA` or call raises. |
 | `tools/onboarding_reply.py` | ONBOARDING-state handler; finalisation via `_finalize` runs profile + plan generation. |
 | `tools/profile_generator.py` | Transcript → `athlete_profile.md` (write-once). |
 | `tools/plan_generator.py` | First training plan from profile. |

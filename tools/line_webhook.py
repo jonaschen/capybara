@@ -37,6 +37,8 @@ from linebot.v3.messaging import (
     ApiClient,
     Configuration,
     MessagingApi,
+    MessagingApiBlob,
+    PushMessageRequest,
     ReplyMessageRequest,
     TextMessage,
 )
@@ -44,6 +46,7 @@ from linebot.v3.webhooks import FollowEvent, MessageEvent, PostbackEvent
 
 from tools import daily_push, gcs_profile, known_users, plan_adjuster, state_store
 from tools.coach_reply import coach_reply
+from tools.image_reply import analyze_training_image
 from tools.onboarding_reply import onboarding_reply
 from tools.webhook_dedup import WebhookDeduplicator
 
@@ -108,6 +111,35 @@ def _reply_line(reply_token: str, text: str) -> None:
                 messages=[TextMessage(text=text)],
             )
         )
+
+
+def _push_line(user_id: str, text: str) -> None:
+    """Send a push message via LINE Messaging API. Used after the
+    reply_token is consumed (e.g., image flow: buffer reply → analyze → push)."""
+    with ApiClient(line_configuration) as api_client:
+        line_bot_api = MessagingApi(api_client)
+        line_bot_api.push_message(
+            PushMessageRequest(to=user_id, messages=[TextMessage(text=text)])
+        )
+
+
+def _fetch_image_bytes(message_id: str) -> tuple[bytes, str]:
+    """Download image bytes via LINE blob API. Returns (bytes, mime).
+    Raises whatever the LINE SDK raises (caller should catch)."""
+    with ApiClient(line_configuration) as api_client:
+        blob_api = MessagingApiBlob(api_client)
+        data = blob_api.get_message_content(message_id)
+    # LINE returns image/jpeg or image/png; SDK doesn't expose the
+    # Content-Type header cleanly here. Sniff on magic bytes.
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        mime = "image/png"
+    elif data[:3] == b"GIF":
+        mime = "image/gif"
+    elif data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        mime = "image/webp"
+    else:
+        mime = "image/jpeg"
+    return data, mime
 
 
 @app.get("/health")
@@ -275,12 +307,22 @@ def _resolve_state(user_id: str) -> str:
 
 def _handle_message_event(event, user_id: str, owner_mode: bool) -> None:
     message = getattr(event, "message", None)
-    if message is None or getattr(message, "type", "") != "text":
-        logger.info(f"Non-text message skipped: {getattr(message, 'type', 'unknown')}")
+    if message is None:
+        logger.info("Empty message skipped")
+        return
+
+    msg_type = getattr(message, "type", "")
+    reply_token = getattr(event, "reply_token", "") or ""
+
+    if msg_type == "image":
+        _handle_image_message(event, message, user_id, owner_mode, reply_token)
+        return
+
+    if msg_type != "text":
+        logger.info(f"Non-text message skipped: {msg_type or 'unknown'}")
         return
 
     user_text = getattr(message, "text", "") or ""
-    reply_token = getattr(event, "reply_token", "") or ""
 
     # Owner slash commands intercept before state routing. Unknown commands
     # fall through so the developer can still chat normally.
@@ -324,6 +366,104 @@ def _handle_message_event(event, user_id: str, owner_mode: bool) -> None:
     logger.info(
         f"TURN user={user_id[:8]}... state={state} "
         f"in={user_text[:80]!r} out={reply_text[:80]!r}"
+    )
+
+
+_IMAGE_BUFFER_TEXT = "收到了，稍等卡皮看看 🐾"
+_IMAGE_ONBOARDING_DEFER_TEXT = (
+    "先聊一下基本資料，等卡皮認識你之後再幫你看數據比較準喔。🐾"
+)
+_IMAGE_NO_PROFILE_DEFER_TEXT = (
+    "卡皮這邊還沒有你的訓練檔案。先聊幾句讓卡皮認識你，再傳數據過來會比較有意義喔。🐾"
+)
+_IMAGE_NOT_TRAINING_TEXT = (
+    "卡皮看了一下，這張不太像訓練數據。\n\n"
+    "如果是配速圖、心率圖，或訓練紀錄表，可以試著重傳；"
+    "或直接跟卡皮說數字也可以。🐾"
+)
+_IMAGE_FAILURE_TEXT = (
+    "卡皮這邊讀圖失敗了。等等再傳一次看看，"
+    "或直接把數字打給卡皮也行。🐾"
+)
+
+
+def _handle_image_message(event, message, user_id: str, owner_mode: bool, reply_token: str) -> None:
+    """User sent an image (likely a fitness app screenshot).
+
+    Three branches by state/profile:
+      1. ONBOARDING — politely defer; finish onboarding first.
+      2. IDLE without athlete_profile.md — politely defer; encourage onboarding.
+      3. IDLE with profile — buffer reply via reply_token, fetch image bytes,
+         analyze via image_reply, push the personalized response.
+    """
+    message_id = getattr(message, "id", None) or getattr(message, "message_id", "")
+
+    # Owner skips auto-onboarding (per _handle_message_event policy).
+    if owner_mode:
+        state = _user_states.get(user_id, STATE_IDLE)
+    else:
+        state = _resolve_state(user_id)
+
+    has_profile = gcs_profile.profile_exists(user_id, filename="athlete_profile.md")
+
+    # Branch 1 + 2 — defer politely; reply_token only.
+    if state == STATE_ONBOARDING:
+        if reply_token:
+            _reply_line(reply_token, _IMAGE_ONBOARDING_DEFER_TEXT)
+        logger.info(f"IMAGE user={user_id[:8]}... state=ONBOARDING action=defer")
+        return
+
+    if not has_profile:
+        if reply_token:
+            _reply_line(reply_token, _IMAGE_NO_PROFILE_DEFER_TEXT)
+        logger.info(f"IMAGE user={user_id[:8]}... state=IDLE profile=false action=defer")
+        return
+
+    # Branch 3 — main flow: buffer reply, fetch, analyze, push.
+    if reply_token:
+        try:
+            _reply_line(reply_token, _IMAGE_BUFFER_TEXT)
+        except Exception as exc:
+            logger.warning(f"image buffer reply failed for {user_id[:8]}...: {exc}")
+
+    try:
+        image_bytes, mime = _fetch_image_bytes(message_id)
+    except Exception as exc:
+        logger.warning(f"image fetch failed for {user_id[:8]}...: {exc}")
+        _push_line(user_id, _IMAGE_FAILURE_TEXT)
+        return
+
+    try:
+        athlete_profile = gcs_profile.read_profile(user_id, filename="athlete_profile.md")
+    except FileNotFoundError:
+        athlete_profile = ""
+
+    reply, debug = analyze_training_image(
+        image_bytes=image_bytes,
+        mime_type=mime,
+        athlete_profile=athlete_profile,
+    )
+
+    if reply is None:
+        push_text = _IMAGE_NOT_TRAINING_TEXT if debug.get("error") is None else _IMAGE_FAILURE_TEXT
+        _push_line(user_id, push_text)
+        kind = "unknown" if debug.get("error") is None else "error"
+        logger.info(
+            f"IMAGE user={user_id[:8]}... state=IDLE profile=true "
+            f"kind={kind} size={debug['size_kb']}kb"
+        )
+        return
+
+    if owner_mode:
+        reply = (
+            f"{reply}\n\n[🏊 image | size: {debug['size_kb']}kb | "
+            f"tokens: {debug['in_tok']}in/{debug['out_tok']}out]"
+        )
+
+    _push_line(user_id, reply)
+    logger.info(
+        f"IMAGE user={user_id[:8]}... state=IDLE profile=true "
+        f"kind=training size={debug['size_kb']}kb tokens={debug['in_tok']}in/{debug['out_tok']}out"
     )
 
 

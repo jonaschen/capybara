@@ -86,3 +86,11 @@ class TestVoiceInjectedIntoPrompts:
         assert "永遠用「卡皮教練」或「卡皮」稱呼自己" in text
         assert "【自稱】" in text
         assert "【邀請而非要求】" in text
+
+    def test_image_reply_prompt(self):
+        from tools.image_reply import build_image_prompt
+        prompt = build_image_prompt("目標：完成台東 226")
+        assert CAPYBARA_VOICE in prompt
+        # Spot-check key voice rule phrases survive verbatim
+        assert "絕對不用「我」" in prompt
+        assert "卡皮教練" in prompt

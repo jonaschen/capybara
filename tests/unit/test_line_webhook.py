@@ -53,6 +53,21 @@ def _fake_message_event(text: str, user_id: str, webhook_event_id: str = "evt_1"
     return ev
 
 
+def _fake_image_event(user_id: str, message_id: str = "img_1", webhook_event_id: str = "evt_img") -> MagicMock:
+    """Build a MagicMock MessageEvent carrying an image message."""
+    from linebot.v3.webhooks import MessageEvent
+
+    ev = MagicMock(spec=MessageEvent)
+    ev.webhook_event_id = webhook_event_id
+    ev.reply_token = "rt_" + webhook_event_id
+    ev.source = MagicMock()
+    ev.source.user_id = user_id
+    ev.message = MagicMock()
+    ev.message.type = "image"
+    ev.message.id = message_id
+    return ev
+
+
 class TestHealth:
     def test_health_returns_200(self):
         client = TestClient(app)
@@ -372,3 +387,180 @@ class TestRestartRecovery:
         assert r1.status_code == 200
         assert r2.status_code == 200
         assert mock_reply.call_count == 1
+
+
+class TestImageMessage:
+    """Image events route through _handle_image_message with three branches."""
+
+    def test_onboarding_image_replies_with_defer_text(self):
+        """User mid-onboarding sends image → polite defer; image_reply NOT called."""
+        from tools.line_webhook import STATE_ONBOARDING
+
+        client = TestClient(app)
+        ev = _fake_image_event(user_id="U_OB", webhook_event_id="evt_ob")
+        _user_states["U_OB"] = STATE_ONBOARDING
+
+        with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook._reply_line") as mock_reply, \
+             patch("tools.line_webhook.analyze_training_image") as mock_analyze, \
+             patch("tools.line_webhook._fetch_image_bytes") as mock_fetch:
+            r = client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+
+        assert r.status_code == 200
+        assert mock_reply.called
+        sent = mock_reply.call_args.args[1]
+        assert "先聊一下基本資料" in sent
+        # Main flow not entered
+        assert not mock_analyze.called
+        assert not mock_fetch.called
+
+    def test_idle_no_profile_image_replies_with_defer_text(self):
+        """Edge case: user is in IDLE but their athlete_profile.md is missing
+        (e.g., owner who hasn't onboarded, or post-restart state-without-file).
+        Should defer politely instead of calling LLM with empty context."""
+        from tools.line_webhook import STATE_IDLE
+
+        client = TestClient(app)
+        ev = _fake_image_event(user_id="U_NEW", webhook_event_id="evt_new")
+        # Force IDLE state so _resolve_state short-circuits (otherwise
+        # missing profile would route the user to ONBOARDING).
+        _user_states["U_NEW"] = STATE_IDLE
+
+        with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook.gcs_profile.profile_exists", return_value=False), \
+             patch("tools.line_webhook._reply_line") as mock_reply, \
+             patch("tools.line_webhook.analyze_training_image") as mock_analyze, \
+             patch("tools.line_webhook._fetch_image_bytes") as mock_fetch:
+            r = client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+
+        assert r.status_code == 200
+        assert mock_reply.called
+        sent = mock_reply.call_args.args[1]
+        assert "還沒有你的訓練檔案" in sent
+        assert not mock_analyze.called
+        assert not mock_fetch.called
+
+    def test_idle_with_profile_buffer_then_personalized_push(self):
+        """Main flow: buffer reply → fetch → analyze → push personalized reply."""
+        from tools.line_webhook import STATE_IDLE
+
+        client = TestClient(app)
+        ev = _fake_image_event(user_id="U_HAS", message_id="img_42", webhook_event_id="evt_has")
+        _user_states["U_HAS"] = STATE_IDLE
+
+        with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook.gcs_profile.profile_exists", return_value=True), \
+             patch("tools.line_webhook.gcs_profile.read_profile", return_value="目標：台東 226"), \
+             patch("tools.line_webhook._reply_line") as mock_reply, \
+             patch("tools.line_webhook._push_line") as mock_push, \
+             patch("tools.line_webhook._fetch_image_bytes",
+                   return_value=(b"\x89PNG\r\n\x1a\nfake", "image/png")), \
+             patch("tools.line_webhook.analyze_training_image",
+                   return_value=("卡皮看到你跑了 10K，後半掉速。🐾",
+                                 {"size_kb": 12.3, "in_tok": 850, "out_tok": 90, "error": None})):
+            r = client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+
+        assert r.status_code == 200
+        # Buffer reply via reply_token
+        assert mock_reply.called
+        buffer_text = mock_reply.call_args.args[1]
+        assert "稍等卡皮看看" in buffer_text
+        # Personalized push (no owner footer)
+        assert mock_push.called
+        pushed = mock_push.call_args.args
+        assert pushed[0] == "U_HAS"
+        assert "卡皮看到你跑了 10K" in pushed[1]
+        assert "[🏊" not in pushed[1]  # no owner footer for non-owner
+
+    def test_idle_with_profile_non_training_image_pushes_fallback(self):
+        from tools.line_webhook import STATE_IDLE
+
+        client = TestClient(app)
+        ev = _fake_image_event(user_id="U_FOOD", webhook_event_id="evt_food")
+        _user_states["U_FOOD"] = STATE_IDLE
+
+        with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook.gcs_profile.profile_exists", return_value=True), \
+             patch("tools.line_webhook.gcs_profile.read_profile", return_value=""), \
+             patch("tools.line_webhook._reply_line"), \
+             patch("tools.line_webhook._push_line") as mock_push, \
+             patch("tools.line_webhook._fetch_image_bytes", return_value=(b"x", "image/jpeg")), \
+             patch("tools.line_webhook.analyze_training_image",
+                   return_value=(None, {"size_kb": 0.1, "in_tok": 100, "out_tok": 0, "error": None})):
+            client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+
+        assert mock_push.called
+        pushed_text = mock_push.call_args.args[1]
+        assert "不太像訓練數據" in pushed_text
+
+    def test_idle_with_profile_fetch_failure_pushes_failure_text(self):
+        """LINE blob fetch failure → push apology text, do not crash."""
+        from tools.line_webhook import STATE_IDLE
+
+        client = TestClient(app)
+        ev = _fake_image_event(user_id="U_FAIL", webhook_event_id="evt_fail")
+        _user_states["U_FAIL"] = STATE_IDLE
+
+        with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook.gcs_profile.profile_exists", return_value=True), \
+             patch("tools.line_webhook._reply_line"), \
+             patch("tools.line_webhook._push_line") as mock_push, \
+             patch("tools.line_webhook._fetch_image_bytes",
+                   side_effect=RuntimeError("blob api 500")), \
+             patch("tools.line_webhook.analyze_training_image") as mock_analyze:
+            r = client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+
+        assert r.status_code == 200
+        assert mock_push.called
+        assert "讀圖失敗" in mock_push.call_args.args[1]
+        # analyze not called when fetch fails
+        assert not mock_analyze.called
+
+    def test_owner_image_appends_debug_footer(self):
+        from tools.line_webhook import STATE_IDLE
+
+        client = TestClient(app)
+        ev = _fake_image_event(user_id="U_OWNER", webhook_event_id="evt_oi")
+        _user_states["U_OWNER"] = STATE_IDLE
+
+        with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook.gcs_profile.profile_exists", return_value=True), \
+             patch("tools.line_webhook.gcs_profile.read_profile", return_value=""), \
+             patch("tools.line_webhook._reply_line"), \
+             patch("tools.line_webhook._push_line") as mock_push, \
+             patch("tools.line_webhook._fetch_image_bytes",
+                   return_value=(b"\x89PNG\r\n\x1a\nfake", "image/png")), \
+             patch("tools.line_webhook.analyze_training_image",
+                   return_value=("Zone 2 跑了 40 分。🐾",
+                                 {"size_kb": 5.5, "in_tok": 700, "out_tok": 60, "error": None})):
+            client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+
+        pushed_text = mock_push.call_args.args[1]
+        assert "🏊 image" in pushed_text
+        assert "size: 5.5kb" in pushed_text
+        assert "tokens: 700in/60out" in pushed_text
+
+    def test_image_event_logs_one_image_line(self, caplog):
+        """Daily review must see one IMAGE log line per image event."""
+        from tools.line_webhook import STATE_IDLE
+
+        client = TestClient(app)
+        ev = _fake_image_event(user_id="U_LOG2", webhook_event_id="evt_log2")
+        _user_states["U_LOG2"] = STATE_IDLE
+
+        with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook.gcs_profile.profile_exists", return_value=True), \
+             patch("tools.line_webhook.gcs_profile.read_profile", return_value=""), \
+             patch("tools.line_webhook._reply_line"), \
+             patch("tools.line_webhook._push_line"), \
+             patch("tools.line_webhook._fetch_image_bytes", return_value=(b"x", "image/jpeg")), \
+             patch("tools.line_webhook.analyze_training_image",
+                   return_value=("ok", {"size_kb": 1.0, "in_tok": 500, "out_tok": 50, "error": None})):
+            with caplog.at_level("INFO", logger="capybara.webhook"):
+                client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+
+        image_lines = [r.message for r in caplog.records if r.message.startswith("IMAGE ")]
+        assert len(image_lines) == 1
+        line = image_lines[0]
+        assert "U_LOG2"[:8] in line
+        assert "kind=training" in line
