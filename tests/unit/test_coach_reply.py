@@ -195,3 +195,13 @@ class TestCoachReply:
         assert "挫折" in COACH_SYSTEM_PROMPT
         # Substantive (fact-based) encouragement, not toxic positivity
         assert "事實" in COACH_SYSTEM_PROMPT
+
+    def test_system_prompt_state_first_persona(self):
+        """Coach must address user state (tired/stressed/no sleep) BEFORE
+        prescribing training. Data must be interpreted with life context.
+        Missed workouts are info, not failure. These three rules come from
+        CLAUDE.md §Persona Rules — guard against silent drift."""
+        from tools.coach_reply import COACH_SYSTEM_PROMPT
+        assert "朋友先，教練後" in COACH_SYSTEM_PROMPT
+        assert "數據要有脈絡" in COACH_SYSTEM_PROMPT
+        assert "沒執行課表不是失敗，是資訊" in COACH_SYSTEM_PROMPT

@@ -78,6 +78,16 @@ class TestGenerateMorningPush:
         system = client.messages.calls[0]["system"]
         assert "💡" in system
 
+    def test_morning_prompt_uses_statement_not_command(self):
+        """Morning push first line must be a statement ('卡皮 arranged X'), not
+        a command ('you must X'). Per CLAUDE.md §Persona Rules: leave room for
+        the user to decide whether to actually train today."""
+        client = MockClaudeClient.with_text("x")
+        daily_push.generate_morning_push(profile=_PROFILE, plan_md=_PLAN, client=client)
+        system = client.messages.calls[0]["system"]
+        assert "陳述句" in system
+        assert "命令句" in system
+
 
 class TestGenerateEveningPush:
     def test_returns_short_companionship_line(self):
@@ -91,6 +101,16 @@ class TestGenerateEveningPush:
         daily_push.generate_evening_push(profile=_PROFILE, plan_md=_PLAN, client=client)
         system = client.messages.calls[0]["system"]
         assert "不要求" in system or "陪伴" in system
+
+    def test_evening_prompt_does_not_call_out_missed_workouts(self):
+        """Per CLAUDE.md §Persona Rules: 沒執行課表是資訊不是失敗.
+        Evening push must explicitly forbid pointing out / asking why
+        the user skipped today's session."""
+        client = MockClaudeClient.with_text("x")
+        daily_push.generate_evening_push(profile=_PROFILE, plan_md=_PLAN, client=client)
+        system = client.messages.calls[0]["system"]
+        assert "不要點出" in system
+        assert "沒練是資訊不是失敗" in system
 
 
 class TestSendDailyPush:
