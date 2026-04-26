@@ -457,6 +457,7 @@ class TestImageMessage:
                    return_value=(b"\x89PNG\r\n\x1a\nfake", "image/png")), \
              patch("tools.line_webhook.analyze_training_image",
                    return_value=("卡皮看到你跑了 10K，後半掉速。🐾",
+                                 "[訓練截圖：跑步, 10km, 配速趨勢：後半掉速]",
                                  {"size_kb": 12.3, "in_tok": 850, "out_tok": 90, "error": None})):
             r = client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
 
@@ -486,7 +487,8 @@ class TestImageMessage:
              patch("tools.line_webhook._push_line") as mock_push, \
              patch("tools.line_webhook._fetch_image_bytes", return_value=(b"x", "image/jpeg")), \
              patch("tools.line_webhook.analyze_training_image",
-                   return_value=(None, {"size_kb": 0.1, "in_tok": 100, "out_tok": 0, "error": None})):
+                   return_value=(None, "[傳了一張非訓練數據圖片]",
+                                 {"size_kb": 0.1, "in_tok": 100, "out_tok": 0, "error": None})):
             client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
 
         assert mock_push.called
@@ -532,6 +534,7 @@ class TestImageMessage:
                    return_value=(b"\x89PNG\r\n\x1a\nfake", "image/png")), \
              patch("tools.line_webhook.analyze_training_image",
                    return_value=("Zone 2 跑了 40 分。🐾",
+                                 "[訓練截圖：跑步, 8km, 配速趨勢：穩定]",
                                  {"size_kb": 5.5, "in_tok": 700, "out_tok": 60, "error": None})):
             client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
 
@@ -555,7 +558,8 @@ class TestImageMessage:
              patch("tools.line_webhook._push_line"), \
              patch("tools.line_webhook._fetch_image_bytes", return_value=(b"x", "image/jpeg")), \
              patch("tools.line_webhook.analyze_training_image",
-                   return_value=("ok", {"size_kb": 1.0, "in_tok": 500, "out_tok": 50, "error": None})):
+                   return_value=("ok", "[訓練截圖：跑步, 5km, 配速趨勢：穩定]",
+                                 {"size_kb": 1.0, "in_tok": 500, "out_tok": 50, "error": None})):
             with caplog.at_level("INFO", logger="capybara.webhook"):
                 client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
 
@@ -564,3 +568,158 @@ class TestImageMessage:
         line = image_lines[0]
         assert "U_LOG2"[:8] in line
         assert "kind=training" in line
+
+
+class TestIdleChatHistory:
+    """Phase B-lite: IDLE turns persist conversation history to chat_store
+    and re-inject on subsequent calls so the bot has short-term continuity."""
+
+    def test_idle_turn_appends_to_chat_store(self):
+        from tools.line_webhook import STATE_IDLE
+
+        client = TestClient(app)
+        ev = _fake_message_event("今天可以練什麼", user_id="U_HIST", webhook_event_id="evt_h1")
+        _user_states["U_HIST"] = STATE_IDLE
+
+        with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook.gcs_profile.profile_exists", return_value=True), \
+             patch("tools.line_webhook.coach_reply", return_value="今天 Zone 2 跑 40 分。"), \
+             patch("tools.line_webhook._reply_line"), \
+             patch("tools.line_webhook.chat_store.save_chat_history") as mock_save:
+            client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+
+        assert mock_save.called
+        saved_history = mock_save.call_args.args[1]
+        assert {"role": "user", "content": "今天可以練什麼"} in saved_history
+        assert {"role": "assistant", "content": "今天 Zone 2 跑 40 分。"} in saved_history
+
+    def test_idle_history_passed_into_coach_reply(self):
+        """Second IDLE turn: prior history should reach coach_reply via the
+        history kwarg so the LLM has context."""
+        from tools.line_webhook import STATE_IDLE, _conversation_history
+
+        client = TestClient(app)
+        _user_states["U_CTX"] = STATE_IDLE
+        _conversation_history["U_CTX"] = [
+            {"role": "user", "content": "上次卡皮說我有膝蓋舊傷"},
+            {"role": "assistant", "content": "對，那邊要小心。"},
+        ]
+        ev = _fake_message_event("還記得嗎", user_id="U_CTX", webhook_event_id="evt_ctx")
+
+        with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook.gcs_profile.profile_exists", return_value=True), \
+             patch("tools.line_webhook.coach_reply", return_value="記得喔。") as mock_reply, \
+             patch("tools.line_webhook._reply_line"), \
+             patch("tools.line_webhook.chat_store.save_chat_history"):
+            client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+
+        kwargs = mock_reply.call_args.kwargs
+        history_arg = kwargs.get("history", [])
+        assert any("膝蓋舊傷" in m.get("content", "") for m in history_arg)
+
+    def test_cold_start_loads_history_from_gcs(self):
+        """First message after Cloud Run restart: in-memory dict is empty,
+        webhook hydrates from chat_store before calling coach_reply."""
+        from tools.line_webhook import STATE_IDLE
+
+        client = TestClient(app)
+        ev = _fake_message_event("我又來了", user_id="U_COLD", webhook_event_id="evt_cold")
+        _user_states["U_COLD"] = STATE_IDLE
+        # No in-memory entry yet — simulates fresh instance.
+
+        prior = [
+            {"role": "user", "content": "上週說工作壓力大"},
+            {"role": "assistant", "content": "辛苦了。先休息再說。🐾"},
+        ]
+        with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook.gcs_profile.profile_exists", return_value=True), \
+             patch("tools.line_webhook.chat_store.load_chat_history", return_value=prior) as mock_load, \
+             patch("tools.line_webhook.coach_reply", return_value="嗨，工作有好點嗎？") as mock_reply, \
+             patch("tools.line_webhook._reply_line"), \
+             patch("tools.line_webhook.chat_store.save_chat_history"):
+            client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+
+        assert mock_load.called
+        kwargs = mock_reply.call_args.kwargs
+        history_arg = kwargs.get("history", [])
+        assert any("工作壓力大" in m.get("content", "") for m in history_arg)
+
+    def test_image_appends_summary_to_history(self):
+        """Image event: structured summary stored as user content, bot reply
+        as assistant content. Subsequent text turns can reference both."""
+        from tools.line_webhook import STATE_IDLE
+
+        client = TestClient(app)
+        ev = _fake_image_event(user_id="U_IMG_H", webhook_event_id="evt_imgh")
+        _user_states["U_IMG_H"] = STATE_IDLE
+
+        with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook.gcs_profile.profile_exists", return_value=True), \
+             patch("tools.line_webhook.gcs_profile.read_profile", return_value=""), \
+             patch("tools.line_webhook._reply_line"), \
+             patch("tools.line_webhook._push_line"), \
+             patch("tools.line_webhook._fetch_image_bytes",
+                   return_value=(b"\x89PNG\r\n\x1a\nfake", "image/png")), \
+             patch("tools.line_webhook.analyze_training_image",
+                   return_value=("看到你跑了 10K，配速穩。🐾",
+                                 "[訓練截圖：跑步, 10km, 配速趨勢：穩定]",
+                                 {"size_kb": 5.0, "in_tok": 700, "out_tok": 60, "error": None})), \
+             patch("tools.line_webhook.chat_store.save_chat_history") as mock_save:
+            client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+
+        saved = mock_save.call_args.args[1]
+        # Image summary stored as user message — NOT empty string, NOT bot's reply
+        user_msgs = [m for m in saved if m["role"] == "user"]
+        assert any("[訓練截圖：跑步, 10km" in m["content"] for m in user_msgs)
+        # Bot's interpretation stored as assistant message
+        asst_msgs = [m for m in saved if m["role"] == "assistant"]
+        assert any("看到你跑了 10K" in m["content"] for m in asst_msgs)
+
+    def test_owner_history_command_lists_messages(self):
+        from tools.line_webhook import STATE_IDLE, _conversation_history
+
+        client = TestClient(app)
+        _user_states["U_OWNER"] = STATE_IDLE
+        _conversation_history["U_OWNER"] = [
+            {"role": "user", "content": "今天要練嗎"},
+            {"role": "assistant", "content": "Zone 2 40 分鐘。"},
+        ]
+        ev = _fake_message_event("/history", user_id="U_OWNER", webhook_event_id="evt_hist")
+
+        with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook._reply_line") as mock_reply:
+            client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+
+        sent = mock_reply.call_args.args[1]
+        assert "目前歷史" in sent
+        assert "今天要練嗎" in sent
+        assert "Zone 2 40 分鐘" in sent
+
+    def test_owner_history_empty_state_message(self):
+        from tools.line_webhook import STATE_IDLE
+
+        client = TestClient(app)
+        _user_states["U_OWNER"] = STATE_IDLE
+        ev = _fake_message_event("/history", user_id="U_OWNER", webhook_event_id="evt_hist2")
+
+        with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook.chat_store.load_chat_history", return_value=[]), \
+             patch("tools.line_webhook._reply_line") as mock_reply:
+            client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+
+        sent = mock_reply.call_args.args[1]
+        assert "沒有對話歷史" in sent
+
+    def test_onboard_command_clears_chat_store(self):
+        """/onboard restarts the interview — the IDLE chat history must be
+        wiped so it doesn't bleed into the new onboarding context."""
+        client = TestClient(app)
+        ev = _fake_message_event("/onboard", user_id="U_OWNER", webhook_event_id="evt_ob")
+
+        with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook._reply_line"), \
+             patch("tools.line_webhook.chat_store.clear_chat_history") as mock_clear:
+            client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+
+        assert mock_clear.called
+        assert mock_clear.call_args.args[0] == "U_OWNER"

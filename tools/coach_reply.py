@@ -103,11 +103,15 @@ def coach_reply(
     user_id: str = "",
     owner: bool = False,
     client=None,
+    history: list[dict] | None = None,
 ) -> str:
     """Compose a coach reply for one user message.
 
     - Detects domain from user_text.
     - Calls the LLM with the coach persona system prompt.
+    - When `history` is given, prepends those messages so the LLM has
+      short-term conversational context (Phase B-lite). Webhook caller
+      is responsible for the persistence + trimming.
     - Non-owner + injury domain: prepends the mandatory medical disclaimer.
     - Owner mode: appends a debug footer with domain + token usage.
     """
@@ -126,11 +130,16 @@ def coach_reply(
     else:
         system_prompt = COACH_SYSTEM_PROMPT
 
+    messages: list[dict] = []
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": user_text})
+
     response = client.messages.create(
         model=os.environ.get("COACH_MODEL", "claude-sonnet-4-6"),
         max_tokens=400,
         system=system_prompt,
-        messages=[{"role": "user", "content": user_text}],
+        messages=messages,
     )
 
     text = response.content[0].text.strip()

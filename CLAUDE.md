@@ -143,7 +143,9 @@ To change the cooldown / max attempts: edit `INVITE_COOLDOWN` and `MAX_INVITES` 
 3. LLM 不認得是訓練數據時回 sentinel `NOT_TRAINING_DATA`，webhook push fallback「不太像訓練數據⋯」
 4. owner footer：`[🏊 image | size: Nkb | tokens: Nin/Nout]`
 
-**個人化邊界**：目前只到 `athlete_profile.md` 等級——卡皮會說「結合你想完成台東 226⋯」這種引用 profile 的話。**不會**做到「你上週說工作壓力大⋯」這種跨對話 callback——那需要另開的 per-user 對話記憶層（`user_notes.md` + 抽事實的 background pass），是 Phase B 的另一個 PLAN。
+**個人化邊界**：profile + **最近 10 輪對話歷史**（Phase B-lite，由 `chat_store.py` 負責持久化）。卡皮可以引用 profile 也可以接住「剛剛你提的那個」「上一則」「昨天的截圖」這類短期 callback。**還沒**做到的是「你上週說工作壓力大⋯」這種出 10-輪視窗外的長期 callback——那需要另開的 per-user 摘要記憶層（`user_notes.md` + 抽事實的 background pass），是 Phase B-full，下次再規劃。
+
+圖片訊息在 chat history 裡記成結構化摘要 `[訓練截圖：跑步, 10km, 配速趨勢：後半掉速]`，由 `image_reply` 的 LLM 在輸出時用 `<summary>...</summary>` tag 一併產出（webhook 會把 tag 從用戶看到的回應中拆掉）。
 
 `tools/gemini_client.py` 已支援 multimodal（list-form content blocks → Gemini parts with `inline_data`），未來想換成 Claude vision 只要在 `bedrock_claude_client.py` 加同樣的轉換即可。
 
@@ -176,6 +178,7 @@ Wraps `gcloud logging read` for `capybara-backend`. Pipe to `less` / `grep` for 
 | `tools/daily_push.py` | Morning/evening generator + per-user fan-out. Uses `get_llm_client()`. |
 | `tools/rag_retriever.py` | Slim RAG file lookup + disclaimer trigger parser. |
 | `tools/state_store.py` | GCS-backed onboarding-state persistence (Cloud Run scale-out safety). |
+| `tools/chat_store.py` | GCS-backed IDLE chat-history persistence (Phase B-lite). Last 10 rounds, auto-trimmed on save. Survives Cloud Run cold starts. |
 | `tools/known_users.py` | Per-user `known_user.json` + 7-day-throttled re-invitation push. |
 | `tools/voice.py` | `CAPYBARA_VOICE` — single source of truth for the bot's six voice rules. Imported by every LLM system prompt; mirrored in `agents/onboarding/system_prompt.xml`. |
 | `tools/gcs_profile.py` | Per-user blob CRUD (`athlete_profile.md`, `training_plan.md`, …). |
@@ -240,7 +243,7 @@ Full deployment walkthrough is in `DEPLOY.md`. Underlying gcloud commands are in
 
 ## Owner Mode
 
-Recognised by `OWNER_LINE_USER_ID`. Direct tone, no disclaimer injection, debug footer `[🏊 domain: X | tokens: Xin/Xout | kb: N]` (kb = estimated KB tokens injected into the system prompt). Commands: `/status`, `/help`, `/onboard` (restart onboarding for the owner), `/plan` (show current plan), `/adjust <理由>` (trigger plan adjustment).
+Recognised by `OWNER_LINE_USER_ID`. Direct tone, no disclaimer injection, debug footer `[🏊 domain: X | tokens: Xin/Xout | kb: N]` (kb = estimated KB tokens injected into the system prompt). Commands: `/status`, `/help`, `/onboard` (restart onboarding + clear chat history), `/plan` (show current plan), `/adjust <理由>` (trigger plan adjustment), `/history` (dump current IDLE chat history for debugging).
 
 Owner is also excluded from `known_users.json` so the weekly invite cron job (`capybara-invite-stalled`) doesn't pester the developer.
 

@@ -206,6 +206,31 @@ class TestCoachReply:
         assert "數據要有脈絡" in COACH_SYSTEM_PROMPT
         assert "沒執行課表不是失敗，是資訊" in COACH_SYSTEM_PROMPT
 
+    def test_history_messages_passed_to_llm_before_user_text(self):
+        """Phase B-lite: when history is given, it goes into messages[]
+        before the current user_text so the LLM has conversational context."""
+        client = MockClaudeClient.with_text("ok")
+        history = [
+            {"role": "user", "content": "上週我說工作壓力大"},
+            {"role": "assistant", "content": "辛苦了。先休息再說。🐾"},
+        ]
+        coach_reply("今天可以練嗎", client=client, history=history)
+        sent_messages = client.messages.calls[0]["messages"]
+        # History first, then current user message
+        assert sent_messages[0]["content"] == "上週我說工作壓力大"
+        assert sent_messages[1]["content"] == "辛苦了。先休息再說。🐾"
+        assert sent_messages[-1]["content"] == "今天可以練嗎"
+        assert sent_messages[-1]["role"] == "user"
+
+    def test_no_history_arg_back_compat(self):
+        """Without history kwarg, behavior matches the pre-Phase-B-lite
+        single-message form (back-compat for callers that don't pass it)."""
+        client = MockClaudeClient.with_text("ok")
+        coach_reply("今天練什麼", client=client)
+        sent_messages = client.messages.calls[0]["messages"]
+        assert len(sent_messages) == 1
+        assert sent_messages[0] == {"role": "user", "content": "今天練什麼"}
+
     def test_system_prompt_handles_pikachu_nickname(self):
         """If a user calls the bot 皮卡 (the other cute mascot from a famous
         anime), respond with humor — don't correct. Bot still self-references

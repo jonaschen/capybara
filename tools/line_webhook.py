@@ -44,7 +44,14 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import FollowEvent, MessageEvent, PostbackEvent
 
-from tools import daily_push, gcs_profile, known_users, plan_adjuster, state_store
+from tools import (
+    chat_store,
+    daily_push,
+    gcs_profile,
+    known_users,
+    plan_adjuster,
+    state_store,
+)
 from tools.coach_reply import coach_reply
 from tools.image_reply import analyze_training_image
 from tools.onboarding_reply import onboarding_reply
@@ -229,7 +236,8 @@ _OWNER_HELP_TEXT = (
     "/status — 目前狀態與使用者 id\n"
     "/plan — 顯示目前訓練計畫\n"
     "/adjust <理由> — 根據理由調整計畫（例如 /adjust 膝蓋不適）\n"
-    "/onboard — 強制進入 onboarding 流程（重新接受訪談）"
+    "/onboard — 強制進入 onboarding 流程（重新接受訪談）\n"
+    "/history — 顯示目前對你的對話歷史（debug 用）"
 )
 
 
@@ -271,7 +279,25 @@ def _handle_owner_command(user_text: str, user_id: str) -> str | None:
     if cmd == "/onboard":
         _user_states[user_id] = STATE_ONBOARDING
         _conversation_history.pop(user_id, None)
+        # Clear IDLE chat history too — restarting onboarding means a fresh
+        # conversational baseline.
+        try:
+            chat_store.clear_chat_history(user_id)
+        except Exception as exc:
+            logger.warning(f"chat_store clear failed for {user_id[:8]}...: {exc}")
         return "已切回 onboarding。下一則訊息開始訪談。"
+
+    if cmd == "/history":
+        history = _ensure_idle_history_loaded(user_id)
+        if not history:
+            return "目前沒有對話歷史。"
+        lines = [f"目前歷史：{len(history)} 則"]
+        for i, msg in enumerate(history, 1):
+            role = msg.get("role", "?")
+            content = msg.get("content", "")
+            preview = content if len(content) <= 80 else content[:80] + "…"
+            lines.append(f"{i}. [{role}] {preview}")
+        return "\n".join(lines)
 
     return None
 
@@ -303,6 +329,24 @@ def _resolve_state(user_id: str) -> str:
     else:
         _user_states[user_id] = STATE_ONBOARDING
     return _user_states[user_id]
+
+
+def _ensure_idle_history_loaded(user_id: str) -> list[dict]:
+    """Return the in-memory IDLE chat history list for this user. On first
+    access after a cold start, hydrate from GCS chat_store. The returned
+    list is the *same* object as the dict entry, so caller's `.append` is
+    visible in subsequent turns until a restart."""
+    if user_id in _conversation_history:
+        return _conversation_history[user_id]
+    try:
+        loaded = chat_store.load_chat_history(user_id)
+    except Exception as exc:
+        logger.warning(f"chat_store load failed for {user_id[:8]}...: {exc}")
+        loaded = []
+    if loaded:
+        logger.info(f"Restored chat history for {user_id[:8]}... ({len(loaded)} msgs)")
+    _conversation_history[user_id] = list(loaded)
+    return _conversation_history[user_id]
 
 
 def _handle_message_event(event, user_id: str, owner_mode: bool) -> None:
@@ -355,7 +399,18 @@ def _handle_message_event(event, user_id: str, owner_mode: bool) -> None:
             # Persist after every turn so a Cloud Run restart can resume.
             state_store.save_onboarding_state(user_id, history)
     else:
-        reply_text = coach_reply(user_text, user_id=user_id, owner=owner_mode)
+        # IDLE — short-term continuity (Phase B-lite). Load history from GCS
+        # on first turn after cold start, append (user, assistant), persist.
+        history = _ensure_idle_history_loaded(user_id)
+        reply_text = coach_reply(
+            user_text, user_id=user_id, owner=owner_mode, history=list(history),
+        )
+        history.append({"role": "user", "content": user_text})
+        history.append({"role": "assistant", "content": reply_text})
+        try:
+            chat_store.save_chat_history(user_id, history)
+        except Exception as exc:
+            logger.warning(f"chat_store save failed for {user_id[:8]}...: {exc}")
 
     if reply_token:
         _reply_line(reply_token, reply_text)
@@ -438,14 +493,24 @@ def _handle_image_message(event, message, user_id: str, owner_mode: bool, reply_
     except FileNotFoundError:
         athlete_profile = ""
 
-    reply, debug = analyze_training_image(
+    reply, history_summary, debug = analyze_training_image(
         image_bytes=image_bytes,
         mime_type=mime,
         athlete_profile=athlete_profile,
     )
 
+    # Append (image-summary, bot-reply) to chat history regardless of outcome
+    # so subsequent text turns can reference "the screenshot you just sent".
+    history = _ensure_idle_history_loaded(user_id)
+    history.append({"role": "user", "content": history_summary})
+
     if reply is None:
         push_text = _IMAGE_NOT_TRAINING_TEXT if debug.get("error") is None else _IMAGE_FAILURE_TEXT
+        history.append({"role": "assistant", "content": push_text})
+        try:
+            chat_store.save_chat_history(user_id, history)
+        except Exception as exc:
+            logger.warning(f"chat_store save failed for {user_id[:8]}...: {exc}")
         _push_line(user_id, push_text)
         kind = "unknown" if debug.get("error") is None else "error"
         logger.info(
@@ -453,6 +518,12 @@ def _handle_image_message(event, message, user_id: str, owner_mode: bool, reply_
             f"kind={kind} size={debug['size_kb']}kb"
         )
         return
+
+    history.append({"role": "assistant", "content": reply})
+    try:
+        chat_store.save_chat_history(user_id, history)
+    except Exception as exc:
+        logger.warning(f"chat_store save failed for {user_id[:8]}...: {exc}")
 
     if owner_mode:
         reply = (
@@ -463,7 +534,8 @@ def _handle_image_message(event, message, user_id: str, owner_mode: bool, reply_
     _push_line(user_id, reply)
     logger.info(
         f"IMAGE user={user_id[:8]}... state=IDLE profile=true "
-        f"kind=training size={debug['size_kb']}kb tokens={debug['in_tok']}in/{debug['out_tok']}out"
+        f"kind=training size={debug['size_kb']}kb tokens={debug['in_tok']}in/{debug['out_tok']}out "
+        f"summary={history_summary[:60]!r}"
     )
 
 
