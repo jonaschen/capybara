@@ -540,6 +540,30 @@ class TestImageMessage:
         # analyze not called when fetch fails
         assert not mock_analyze.called
 
+    def test_owner_image_passes_owner_flag_to_analyzer(self):
+        """Webhook must thread owner_mode into analyze_training_image so the
+        prompt knows it's talking to the dev (gets the dogfood note)."""
+        from tools.line_webhook import STATE_IDLE
+
+        client = TestClient(app)
+        ev = _fake_image_event(user_id="U_OWNER", webhook_event_id="evt_oi2")
+        _user_states["U_OWNER"] = STATE_IDLE
+
+        with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
+             patch("tools.line_webhook.gcs_profile.profile_exists", return_value=True), \
+             patch("tools.line_webhook.gcs_profile.read_profile", return_value=""), \
+             patch("tools.line_webhook._reply_line"), \
+             patch("tools.line_webhook._push_line"), \
+             patch("tools.line_webhook._fetch_image_bytes",
+                   return_value=(b"\x89PNG\r\n\x1a\nfake", "image/png")), \
+             patch("tools.line_webhook.analyze_training_image",
+                   return_value=("ok", "[訓練截圖：跑步, 5km, 配速趨勢：穩定]",
+                                 {"size_kb": 1.0, "in_tok": 500, "out_tok": 50, "error": None})) as mock_analyze:
+            client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
+
+        assert mock_analyze.called
+        assert mock_analyze.call_args.kwargs.get("owner") is True
+
     def test_owner_image_appends_debug_footer(self):
         from tools.line_webhook import STATE_IDLE
 

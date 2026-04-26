@@ -498,6 +498,7 @@ def _handle_image_message(event, message, user_id: str, owner_mode: bool, reply_
         image_bytes=image_bytes,
         mime_type=mime,
         athlete_profile=athlete_profile,
+        owner=owner_mode,
     )
 
     # Append (image-summary, bot-reply) to chat history regardless of outcome

@@ -231,6 +231,31 @@ class TestCoachReply:
         assert len(sent_messages) == 1
         assert sent_messages[0] == {"role": "user", "content": "今天練什麼"}
 
+    def test_system_prompt_natural_learning_rule(self):
+        """Coach should opportunistically ask one missing-profile field
+        when the topic naturally comes up — but never hard-pivot to
+        intake-form mode mid-chat."""
+        from tools.coach_reply import COACH_SYSTEM_PROMPT
+        assert "自然學習" in COACH_SYSTEM_PROMPT
+        assert "話題自然帶到" in COACH_SYSTEM_PROMPT
+        assert "一次最多問一個" in COACH_SYSTEM_PROMPT
+
+    def test_owner_mode_appends_dogfood_note_to_system_prompt(self):
+        """When owner=True, coach prompt gains a small note telling the LLM
+        the user is the developer + a real user. Encourages directness."""
+        from tools.coach_reply import OWNER_DOGFOOD_NOTE
+        client = MockClaudeClient.with_text("ok")
+        coach_reply("今天可以練什麼", owner=True, client=client)
+        system = client.messages.calls[0]["system"]
+        assert OWNER_DOGFOOD_NOTE.strip() in system
+
+    def test_non_owner_mode_omits_dogfood_note(self):
+        from tools.coach_reply import OWNER_DOGFOOD_NOTE
+        client = MockClaudeClient.with_text("ok")
+        coach_reply("今天可以練什麼", owner=False, client=client)
+        system = client.messages.calls[0]["system"]
+        assert OWNER_DOGFOOD_NOTE.strip() not in system
+
     def test_system_prompt_handles_pikachu_nickname(self):
         """If a user calls the bot 皮卡 (the other cute mascot from a famous
         anime), respond with humor — don't correct. Bot still self-references

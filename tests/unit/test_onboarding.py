@@ -30,6 +30,13 @@ class TestSystemPromptFile:
     def test_file_exists(self):
         assert ob.SYSTEM_PROMPT_PATH.exists()
 
+    def test_file_mentions_natural_learning_handoff(self):
+        """Onboarding XML should make explicit that missing fields will be
+        learned naturally during ongoing chat — not asked exhaustively
+        in the interview phase. Coach has the matching rule on its side."""
+        text = ob.SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+        assert "之後在日常聊天" in text or "之後聊到" in text
+
     def test_file_does_not_repeat_welcome_greeting(self):
         """The 『初次見面』 greeting lives in line_webhook.WELCOME_TEXT (sent on
         FollowEvent). The onboarding prompt must NOT instruct the LLM to

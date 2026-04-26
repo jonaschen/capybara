@@ -95,6 +95,7 @@ def analyze_training_image(
     image_bytes: bytes,
     mime_type: str,
     athlete_profile: str,
+    owner: bool = False,
     client=None,
 ) -> tuple[str | None, str, dict[str, Any]]:
     """Single multimodal LLM call. Returns (reply_text, history_summary, debug).
@@ -119,6 +120,9 @@ def analyze_training_image(
         client = get_llm_client()
 
     system_prompt = build_image_prompt(athlete_profile)
+    if owner:
+        from tools.coach_reply import OWNER_DOGFOOD_NOTE
+        system_prompt = system_prompt + OWNER_DOGFOOD_NOTE
     user_content = [
         {"type": "text", "text": "請看這張圖片。"},
         {"type": "image", "source": {

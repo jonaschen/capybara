@@ -160,3 +160,21 @@ class TestAnalyzeTrainingImage:
             b"x" * 2048, "image/jpeg", _PROFILE, client=client,
         )
         assert debug["size_kb"] == 2.0
+
+    def test_owner_mode_appends_dogfood_note(self):
+        from tools.coach_reply import OWNER_DOGFOOD_NOTE
+        client = MockGeminiClient.with_text(_TRAINING_REPLY)
+        analyze_training_image(
+            _FAKE_BYTES, "image/png", _PROFILE, owner=True, client=client,
+        )
+        system = client.messages.calls[0]["system"]
+        assert OWNER_DOGFOOD_NOTE.strip() in system
+
+    def test_non_owner_mode_omits_dogfood_note(self):
+        from tools.coach_reply import OWNER_DOGFOOD_NOTE
+        client = MockGeminiClient.with_text(_TRAINING_REPLY)
+        analyze_training_image(
+            _FAKE_BYTES, "image/png", _PROFILE, owner=False, client=client,
+        )
+        system = client.messages.calls[0]["system"]
+        assert OWNER_DOGFOOD_NOTE.strip() not in system
