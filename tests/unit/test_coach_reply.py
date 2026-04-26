@@ -205,3 +205,11 @@ class TestCoachReply:
         assert "朋友先，教練後" in COACH_SYSTEM_PROMPT
         assert "數據要有脈絡" in COACH_SYSTEM_PROMPT
         assert "沒執行課表不是失敗，是資訊" in COACH_SYSTEM_PROMPT
+
+    def test_system_prompt_handles_pikachu_nickname(self):
+        """If a user calls the bot 皮卡 (the other cute mascot from a famous
+        anime), respond with humor — don't correct. Bot still self-references
+        as 卡皮教練 / 卡皮 only."""
+        from tools.coach_reply import COACH_SYSTEM_PROMPT
+        assert "皮卡" in COACH_SYSTEM_PROMPT
+        assert "幽默接受" in COACH_SYSTEM_PROMPT
