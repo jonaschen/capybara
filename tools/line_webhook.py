@@ -428,9 +428,6 @@ _IMAGE_BUFFER_TEXT = "收到了，稍等卡皮看看 🐾"
 _IMAGE_ONBOARDING_DEFER_TEXT = (
     "先聊一下基本資料，等卡皮認識你之後再幫你看數據比較準喔。🐾"
 )
-_IMAGE_NO_PROFILE_DEFER_TEXT = (
-    "卡皮這邊還沒有你的訓練檔案。先聊幾句讓卡皮認識你，再傳數據過來會比較有意義喔。🐾"
-)
 _IMAGE_NOT_TRAINING_TEXT = (
     "卡皮看了一下，這張不太像訓練數據。\n\n"
     "如果是配速圖、心率圖，或訓練紀錄表，可以試著重傳；"
@@ -445,11 +442,14 @@ _IMAGE_FAILURE_TEXT = (
 def _handle_image_message(event, message, user_id: str, owner_mode: bool, reply_token: str) -> None:
     """User sent an image (likely a fitness app screenshot).
 
-    Three branches by state/profile:
-      1. ONBOARDING — politely defer; finish onboarding first.
-      2. IDLE without athlete_profile.md — politely defer; encourage onboarding.
-      3. IDLE with profile — buffer reply via reply_token, fetch image bytes,
-         analyze via image_reply, push the personalized response.
+    Two branches by state:
+      1. ONBOARDING — politely defer (interview takes priority); record the
+         attempt in onboarding history so the LLM doesn't hallucinate later.
+      2. IDLE — buffer reply via reply_token, fetch image bytes, analyze via
+         image_reply, push the personalized response. Empty athlete_profile
+         is OK — image_reply gives generic interpretation rather than a
+         dead-end defer (this matters for owner, who skips onboarding by
+         design and would never have a profile.md).
     """
     message_id = getattr(message, "id", None) or getattr(message, "message_id", "")
 
@@ -459,22 +459,23 @@ def _handle_image_message(event, message, user_id: str, owner_mode: bool, reply_
     else:
         state = _resolve_state(user_id)
 
-    has_profile = gcs_profile.profile_exists(user_id, filename="athlete_profile.md")
-
-    # Branch 1 + 2 — defer politely; reply_token only.
     if state == STATE_ONBOARDING:
         if reply_token:
             _reply_line(reply_token, _IMAGE_ONBOARDING_DEFER_TEXT)
+        # Record the attempt in onboarding history so when the LLM resumes
+        # the interview it doesn't say something contradictory like
+        # "where's your image?" — onboarding_reply iterates this list.
+        history = _conversation_history.setdefault(user_id, [])
+        history.append({"role": "user", "content": "[傳了一張圖片，但目前在 onboarding 中，先繼續訪談]"})
+        history.append({"role": "assistant", "content": _IMAGE_ONBOARDING_DEFER_TEXT})
+        try:
+            state_store.save_onboarding_state(user_id, history)
+        except Exception as exc:
+            logger.warning(f"state_store save failed for {user_id[:8]}...: {exc}")
         logger.info(f"IMAGE user={user_id[:8]}... state=ONBOARDING action=defer")
         return
 
-    if not has_profile:
-        if reply_token:
-            _reply_line(reply_token, _IMAGE_NO_PROFILE_DEFER_TEXT)
-        logger.info(f"IMAGE user={user_id[:8]}... state=IDLE profile=false action=defer")
-        return
-
-    # Branch 3 — main flow: buffer reply, fetch, analyze, push.
+    # IDLE main flow: buffer reply, fetch, analyze, push.
     if reply_token:
         try:
             _reply_line(reply_token, _IMAGE_BUFFER_TEXT)

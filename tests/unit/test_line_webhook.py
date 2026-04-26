@@ -393,8 +393,10 @@ class TestImageMessage:
     """Image events route through _handle_image_message with three branches."""
 
     def test_onboarding_image_replies_with_defer_text(self):
-        """User mid-onboarding sends image → polite defer; image_reply NOT called."""
-        from tools.line_webhook import STATE_ONBOARDING
+        """User mid-onboarding sends image → polite defer; image_reply NOT called.
+        The attempt is recorded in onboarding history so the LLM doesn't
+        hallucinate later (e.g., 'where's your image?' on next text turn)."""
+        from tools.line_webhook import STATE_ONBOARDING, _conversation_history
 
         client = TestClient(app)
         ev = _fake_image_event(user_id="U_OB", webhook_event_id="evt_ob")
@@ -402,6 +404,7 @@ class TestImageMessage:
 
         with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
              patch("tools.line_webhook._reply_line") as mock_reply, \
+             patch("tools.line_webhook.state_store.save_onboarding_state") as mock_save, \
              patch("tools.line_webhook.analyze_training_image") as mock_analyze, \
              patch("tools.line_webhook._fetch_image_bytes") as mock_fetch:
             r = client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
@@ -413,32 +416,51 @@ class TestImageMessage:
         # Main flow not entered
         assert not mock_analyze.called
         assert not mock_fetch.called
+        # Attempt recorded in onboarding history + persisted
+        assert mock_save.called
+        history_entries = _conversation_history.get("U_OB", [])
+        assert any("傳了一張圖片" in m.get("content", "") for m in history_entries)
 
-    def test_idle_no_profile_image_replies_with_defer_text(self):
-        """Edge case: user is in IDLE but their athlete_profile.md is missing
-        (e.g., owner who hasn't onboarded, or post-restart state-without-file).
-        Should defer politely instead of calling LLM with empty context."""
+    def test_idle_without_profile_still_processes_image(self):
+        """Owner (and any IDLE user without athlete_profile.md) must NOT be
+        deferred away from the image flow — that creates a dead-end loop:
+        bot says 'go onboard first' but owner skips onboarding by design,
+        so there's no path forward. Empty profile → image_reply still gives
+        a generic interpretation. Observed in production 2026-04-26: owner
+        sent screenshot, got 'please onboard first', asked 'can you read
+        images?', bot LLM said 'yes!', owner sent another image, deferred
+        again — total 鬼打牆 loop. Fixed by always processing in IDLE."""
         from tools.line_webhook import STATE_IDLE
 
         client = TestClient(app)
-        ev = _fake_image_event(user_id="U_NEW", webhook_event_id="evt_new")
-        # Force IDLE state so _resolve_state short-circuits (otherwise
-        # missing profile would route the user to ONBOARDING).
-        _user_states["U_NEW"] = STATE_IDLE
+        ev = _fake_image_event(user_id="U_OWNER_NO_PROFILE", webhook_event_id="evt_onp")
+        _user_states["U_OWNER_NO_PROFILE"] = STATE_IDLE
 
         with patch("tools.line_webhook.parser.parse", return_value=[ev]), \
              patch("tools.line_webhook.gcs_profile.profile_exists", return_value=False), \
+             patch("tools.line_webhook.gcs_profile.read_profile",
+                   side_effect=FileNotFoundError("no profile")), \
              patch("tools.line_webhook._reply_line") as mock_reply, \
-             patch("tools.line_webhook.analyze_training_image") as mock_analyze, \
-             patch("tools.line_webhook._fetch_image_bytes") as mock_fetch:
+             patch("tools.line_webhook._push_line") as mock_push, \
+             patch("tools.line_webhook._fetch_image_bytes",
+                   return_value=(b"\x89PNG\r\n\x1a\nfake", "image/png")), \
+             patch("tools.line_webhook.analyze_training_image",
+                   return_value=("看到你跑了 5K，配速穩。🐾",
+                                 "[訓練截圖：跑步, 5km, 配速趨勢：穩定]",
+                                 {"size_kb": 3.0, "in_tok": 600, "out_tok": 50, "error": None})) as mock_analyze:
             r = client.post("/callback", headers={"X-Line-Signature": "s"}, content=b"{}")
 
         assert r.status_code == 200
+        # Buffer reply via reply_token
         assert mock_reply.called
-        sent = mock_reply.call_args.args[1]
-        assert "還沒有你的訓練檔案" in sent
-        assert not mock_analyze.called
-        assert not mock_fetch.called
+        assert "稍等卡皮看看" in mock_reply.call_args.args[1]
+        # Main flow ran — analyze_training_image WAS called with empty profile
+        assert mock_analyze.called
+        analyze_kwargs = mock_analyze.call_args.kwargs
+        assert analyze_kwargs.get("athlete_profile") == ""
+        # Push delivered
+        assert mock_push.called
+        assert "看到你跑了 5K" in mock_push.call_args.args[1]
 
     def test_idle_with_profile_buffer_then_personalized_push(self):
         """Main flow: buffer reply → fetch → analyze → push personalized reply."""
