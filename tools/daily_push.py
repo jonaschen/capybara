@@ -128,17 +128,19 @@ def send_daily_push(
 
     user_ids = gcs_profile.list_user_ids(client=gcs_client, bucket=bucket)
     results: list[dict[str, Any]] = []
-    pushed = failed = 0
+    pushed = failed = skipped = 0
 
     for uid in user_ids:
         if not gcs_profile.profile_exists(uid, filename="training_plan.md", client=gcs_client, bucket=bucket):
             logger.info(f"Skip {uid}: no training_plan.md yet")
+            skipped += 1
             continue
         try:
             plan_md = gcs_profile.read_profile(uid, filename="training_plan.md", client=gcs_client, bucket=bucket)
             profile = _load_profile_dict(uid, gcs_client, bucket)
             text = generate(profile=profile, plan_md=plan_md, client=llm_client)
             _push_line(line_api, uid, text)
+            logger.info(f"Pushed {push_type} to {uid[:8]}... ({len(text)} chars)")
             results.append({"user_id": uid, "status": "ok"})
             pushed += 1
         except Exception as exc:
@@ -146,4 +148,8 @@ def send_daily_push(
             results.append({"user_id": uid, "status": "failed", "error": str(exc)})
             failed += 1
 
+    logger.info(
+        f"Push {push_type} done: pushed={pushed} failed={failed} skipped={skipped} "
+        f"total_users={len(user_ids)}"
+    )
     return {"pushed": pushed, "failed": failed, "results": results}
