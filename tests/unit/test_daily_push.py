@@ -194,3 +194,111 @@ class TestSendDailyPush:
         assert result["pushed"] == 0
         assert result["failed"] == 0
         assert result["results"] == []
+
+
+class TestRecentChatInjection:
+    """Phase B-lite extension: daily push reads chat_store and threads
+    recent IDLE conversation into the push prompt. Lets morning/evening
+    reflect what the user said yesterday without checking. Default empty
+    history → unchanged behaviour (back-compat)."""
+
+    def test_format_recent_chat_renders_user_and_bot_lines(self):
+        history = [
+            {"role": "user", "content": "今天好累"},
+            {"role": "assistant", "content": "辛苦了，先休息。🐾"},
+        ]
+        rendered = daily_push._format_recent_chat(history)
+        assert "[學員] 今天好累" in rendered
+        assert "[卡皮] 辛苦了，先休息。🐾" in rendered
+
+    def test_format_recent_chat_skips_empty_content(self):
+        history = [
+            {"role": "user", "content": ""},
+            {"role": "assistant", "content": "有空再聊。"},
+        ]
+        rendered = daily_push._format_recent_chat(history)
+        assert rendered == "[卡皮] 有空再聊。"
+
+    def test_format_recent_chat_empty_returns_empty_string(self):
+        assert daily_push._format_recent_chat([]) == ""
+
+    def test_morning_push_user_message_includes_recent_chat(self):
+        client = MockClaudeClient.with_text("ok")
+        daily_push.generate_morning_push(
+            profile=_PROFILE,
+            plan_md=_PLAN,
+            client=client,
+            recent_chat="[學員] 昨天工作壓力很大\n[卡皮] 辛苦囉，先休息。🐾",
+        )
+        user_content = client.messages.calls[0]["messages"][0]["content"]
+        assert "工作壓力很大" in user_content
+        # Framing: explicit "don't reply to this, use as context"
+        assert "不是要你回應" in user_content
+
+    def test_morning_push_no_history_omits_block(self):
+        client = MockClaudeClient.with_text("ok")
+        daily_push.generate_morning_push(
+            profile=_PROFILE, plan_md=_PLAN, client=client,
+        )
+        user_content = client.messages.calls[0]["messages"][0]["content"]
+        assert "最近 IDLE 對話歷史" not in user_content
+
+    def test_evening_push_user_message_includes_recent_chat(self):
+        client = MockClaudeClient.with_text("ok")
+        daily_push.generate_evening_push(
+            profile=_PROFILE,
+            plan_md=_PLAN,
+            client=client,
+            recent_chat="[學員] 比賽快到了好緊張",
+        )
+        user_content = client.messages.calls[0]["messages"][0]["content"]
+        assert "比賽快到了好緊張" in user_content
+
+    def test_send_daily_push_loads_history_per_user(self):
+        gcs = MockGCSClient()
+        _seed_user(gcs, "U_HIST", bucket="bucket")
+        llm = MockClaudeClient.with_text("今天 Zone 2。\n💡 先熱身。")
+        line = MockLINEAPI()
+
+        # Seed chat history for U_HIST so push has context
+        from tools import chat_store
+        chat_store.save_chat_history(
+            "U_HIST",
+            [
+                {"role": "user", "content": "膝蓋好像怪怪的"},
+                {"role": "assistant", "content": "先觀察兩天，痛要說。🐾"},
+            ],
+            gcs_client=gcs,
+            bucket="bucket",
+        )
+
+        daily_push.send_daily_push(
+            push_type="morning",
+            line_api=line,
+            llm_client=llm,
+            gcs_client=gcs,
+            bucket="bucket",
+        )
+
+        # The user-facing message in the LLM call must contain history context
+        user_content = llm.messages.calls[0]["messages"][0]["content"]
+        assert "膝蓋好像怪怪的" in user_content
+
+    def test_send_daily_push_logs_history_count(self, caplog):
+        gcs = MockGCSClient()
+        _seed_user(gcs, "U_LOG", bucket="bucket")
+        llm = MockClaudeClient.with_text("ok")
+        line = MockLINEAPI()
+
+        with caplog.at_level("INFO", logger="tools.daily_push"):
+            daily_push.send_daily_push(
+                push_type="morning",
+                line_api=line,
+                llm_client=llm,
+                gcs_client=gcs,
+                bucket="bucket",
+            )
+
+        push_lines = [r.message for r in caplog.records if "Pushed morning" in r.message]
+        assert len(push_lines) == 1
+        assert "history=" in push_lines[0]
