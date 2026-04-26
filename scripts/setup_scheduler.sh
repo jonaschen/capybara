@@ -44,22 +44,23 @@ upsert_job() {
   local name="$1"
   local cron="$2"
   local body="$3"
-  local args=(
+  # Common args (no header flag — that name differs between create/update).
+  local common_args=(
     --location="${REGION}"
     --schedule="${cron}"
     --time-zone="Asia/Taipei"
     --uri="${ENDPOINT}"
     --http-method=POST
-    --headers="Authorization=Bearer ${DAILY_PUSH_SECRET},Content-Type=application/json"
     --message-body="${body}"
     --project="${PROJECT}"
   )
+  local headers="Authorization=Bearer ${DAILY_PUSH_SECRET},Content-Type=application/json"
   if gcloud scheduler jobs describe "${name}" --location="${REGION}" --project="${PROJECT}" >/dev/null 2>&1; then
     echo "→ Updating ${name}"
-    gcloud scheduler jobs update http "${name}" "${args[@]}"
+    gcloud scheduler jobs update http "${name}" "${common_args[@]}" --update-headers="${headers}"
   else
     echo "→ Creating ${name}"
-    gcloud scheduler jobs create http "${name}" "${args[@]}"
+    gcloud scheduler jobs create http "${name}" "${common_args[@]}" --headers="${headers}"
   fi
 }
 
@@ -72,22 +73,22 @@ INVITE_ENDPOINT="${URL}/trigger/onboarding_invite"
 upsert_invite_job() {
   local name="$1"
   local cron="$2"
-  local args=(
+  local common_args=(
     --location="${REGION}"
     --schedule="${cron}"
     --time-zone="Asia/Taipei"
     --uri="${INVITE_ENDPOINT}"
     --http-method=POST
-    --headers="Authorization=Bearer ${DAILY_PUSH_SECRET},Content-Type=application/json"
     --message-body='{}'
     --project="${PROJECT}"
   )
+  local headers="Authorization=Bearer ${DAILY_PUSH_SECRET},Content-Type=application/json"
   if gcloud scheduler jobs describe "${name}" --location="${REGION}" --project="${PROJECT}" >/dev/null 2>&1; then
     echo "→ Updating ${name}"
-    gcloud scheduler jobs update http "${name}" "${args[@]}"
+    gcloud scheduler jobs update http "${name}" "${common_args[@]}" --update-headers="${headers}"
   else
     echo "→ Creating ${name}"
-    gcloud scheduler jobs create http "${name}" "${args[@]}"
+    gcloud scheduler jobs create http "${name}" "${common_args[@]}" --headers="${headers}"
   fi
 }
 
