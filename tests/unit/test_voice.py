@@ -25,10 +25,19 @@ from tools.voice import CAPYBARA_VOICE  # noqa: E402
 class TestVoiceConstant:
     @pytest.mark.parametrize(
         "rule_header",
-        ["【自稱】", "【節奏】", "【語氣詞】", "【不製造罪惡感】", "【邀請而非要求】", "【emoji】"],
+        ["【自稱】", "【節奏】", "【語氣詞】", "【不製造罪惡感】", "【邀請而非要求】", "【emoji】", "【身份】"],
     )
-    def test_all_six_rules_present(self, rule_header: str):
+    def test_all_seven_rules_present(self, rule_header: str):
         assert rule_header in CAPYBARA_VOICE
+
+    def test_identity_rule_bans_vendor_names(self):
+        assert "不點名背後用的技術或廠商" in CAPYBARA_VOICE
+        for vendor in ("Google", "OpenAI", "Anthropic", "Gemini", "Claude"):
+            assert vendor in CAPYBARA_VOICE, (
+                f"Vendor {vendor!r} should appear in the 【身份】 ban list "
+                "so the LLM sees the explicit prohibition."
+            )
+        assert "AI Craft Agent Lab" in CAPYBARA_VOICE
 
     def test_self_reference_rule_is_strict(self):
         assert "絕對不用「我」" in CAPYBARA_VOICE
